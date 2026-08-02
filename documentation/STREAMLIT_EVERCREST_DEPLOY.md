@@ -53,6 +53,7 @@ Do not upload a localhost URL or commit `.streamlit/secrets.toml` to GitHub.
 After deployment:
 
 1. Confirm `/` opens the Evercrest Health EHR.
-2. Confirm the patient selector is populated.
-3. Ask a medication question and confirm a grounded response.
-4. Confirm the trace appears in the configured Galileo log stream.
+2. Confirm `/` redirects to `/patientchart`.
+3. Confirm the patient selector is populated.
+4. Ask a medication question and confirm a grounded response.
+5. Confirm the trace appears in the configured Galileo log stream.

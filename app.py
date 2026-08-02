@@ -35,7 +35,7 @@ if not os.getenv('_GALILEO_ENV_LOADED'):
 
 from galileo import galileo_context, GalileoLogger
 from agent_factory import AgentFactory
-from domain_manager import DomainManager, select_default_domain
+from domain_manager import DomainManager, domain_url_path, select_default_domain
 from langchain_core.messages import AIMessage, HumanMessage
 from agent_frameworks.langgraph.langgraph_rag import get_domain_rag_system
 from helpers.galileo_api_helpers import (
@@ -1719,9 +1719,35 @@ def main():
                 app_title = ui_config.get("app_title", f"{domain.title()} Assistant")
                 app_icon = ui_config.get("icon", "🤖")  # Default to robot emoji
                 
-                # Create page using st.Page
+                # The Evercrest deployment uses /patientchart as its canonical
+                # public path. Because Streamlit always assigns the default page
+                # to /, keep a hidden root page that redirects to that path.
                 is_default = (domain == default_domain)
-                
+                public_path = domain_url_path(domain)
+
+                if is_default and domain == "healthcare":
+                    patient_chart_page = st.Page(
+                        create_domain_page(domain),
+                        title=app_title,
+                        url_path=public_path,
+                        icon=app_icon,
+                    )
+
+                    def redirect_to_patient_chart():
+                        st.switch_page(patient_chart_page)
+
+                    pages.append(
+                        st.Page(
+                            redirect_to_patient_chart,
+                            title=app_title,
+                            icon=app_icon,
+                            default=True,
+                            visibility="hidden",
+                        )
+                    )
+                    pages.append(patient_chart_page)
+                    continue
+
                 if is_default:
                     # Default domain gets both root and named path
                     # Default page (root URL)
@@ -1737,7 +1763,7 @@ def main():
                 page = st.Page(
                     create_domain_page(domain),
                     title=app_title,
-                    url_path=f"/{domain}",
+                    url_path=public_path,
                     icon=app_icon
                 )
                 pages.append(page)

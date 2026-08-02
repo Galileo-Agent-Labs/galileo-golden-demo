@@ -31,6 +31,11 @@ def select_default_domain(
     return available_domains[0]
 
 
+def domain_url_path(domain_name: str) -> str:
+    """Return the public path for a domain in the hosted demo."""
+    return "patientchart" if domain_name == "healthcare" else domain_name
+
+
 @dataclass
 class DomainConfig:
     """Container for domain configuration data"""

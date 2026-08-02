@@ -1,6 +1,6 @@
 import unittest
 
-from domain_manager import select_default_domain
+from domain_manager import domain_url_path, select_default_domain
 
 
 class DefaultDomainTests(unittest.TestCase):
@@ -21,6 +21,12 @@ class DefaultDomainTests(unittest.TestCase):
     def test_empty_domain_list_is_rejected(self):
         with self.assertRaises(ValueError):
             select_default_domain([])
+
+    def test_healthcare_uses_patient_chart_path(self):
+        self.assertEqual(domain_url_path("healthcare"), "patientchart")
+
+    def test_other_domains_keep_their_name(self):
+        self.assertEqual(domain_url_path("bank"), "bank")
 
 
 if __name__ == "__main__":

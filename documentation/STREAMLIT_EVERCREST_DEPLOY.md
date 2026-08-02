@@ -12,6 +12,8 @@ the hosted runtime.
 - Entrypoint: `app.py`
 - Python: `3.12`
 - Requested URL: `evercrest-demo.streamlit.app`
+- Galileo project: `demo-test` (inherited from the healthcare domain config)
+- Galileo log stream: `Agent` (inherited from the healthcare domain config)
 
 ## 1. Provision PostgreSQL
 
@@ -28,8 +30,9 @@ URLs, use the direct URL while initializing and the pooled URL in Streamlit.
 ## 2. Initialize healthcare data
 
 Create a temporary `.streamlit/secrets.toml` from the supplied template and set
-the direct `postgres_url`, OpenAI key, and Galileo project/log-stream settings.
-Then run:
+the direct `postgres_url`, OpenAI key, Galileo API key, and console URL. Leave
+`galileo_project` and `galileo_log_stream` absent so the app inherits the
+original Evercrest target (`demo-test` / `Agent`). Then run:
 
 ```bash
 python helpers/setup_vectordb.py healthcare
@@ -44,7 +47,8 @@ collection/tables it manages, so do not point it at an unrelated database.
 In Streamlit Community Cloud, create an app with the deployment coordinates
 above. Select Python 3.12 and paste the hosted values from
 `.streamlit/secrets.toml.template` into Advanced settings -> Secrets. Replace
-the direct database URL with the provider's pooled URL before saving.
+the direct database URL with the provider's pooled URL before saving. Do not add
+Galileo project/log-stream overrides unless intentionally moving the demo.
 
 Do not upload a localhost URL or commit `.streamlit/secrets.toml` to GitHub.
 

@@ -1499,7 +1499,28 @@ def _copilot_suggested_refill_med(active_med_names):
     return ""
 
 
-@st.dialog(f"🩺 {HOSPITAL_NAME} Clinical Assistant", width="large")
+def _queue_copilot_turn(pending_key: str, prompt: str):
+    """Queue a copilot prompt before Streamlit reruns the dialog fragment."""
+    st.session_state[pending_key] = prompt
+
+
+def _queue_copilot_form_turn(pending_key: str, input_key: str):
+    """Queue a non-empty custom prompt from the dialog form callback."""
+    prompt = str(st.session_state.get(input_key, "")).strip()
+    if prompt:
+        st.session_state[pending_key] = prompt
+
+
+def _close_copilot_dialog():
+    """Clear the persistent open flag for either dialog close control."""
+    st.session_state["ehr_copilot_open"] = False
+
+
+@st.dialog(
+    f"🩺 {HOSPITAL_NAME} Clinical Assistant",
+    width="large",
+    on_dismiss=_close_copilot_dialog,
+)
 def _copilot_dialog(pid: str, name: str, meds_summary: str, active_med_names=None):
     """Copilot modal: streaming chat + action cards, scoped to one patient."""
     st.caption(f"Patient in context: **{name}** (`{pid}`)")
@@ -1515,28 +1536,54 @@ def _copilot_dialog(pid: str, name: str, meds_summary: str, active_med_names=Non
     pending = st.session_state.pop(pending_key, None)
     if pending:
         _process_copilot_turn(pending, pid, name, meds_summary)
-        st.rerun()
+        # Refresh only this dialog fragment. A full-app rerun invalidates the
+        # active fragment before the completed reply can be drawn.
+        st.rerun(scope="fragment")
 
-    if not st.session_state.get("messages"):
+    has_messages = bool(st.session_state.get("messages"))
+    show_custom_input = has_messages
+
+    if not has_messages:
         # Starter shortcuts — shown only on a fresh conversation, then hidden.
         q1, q2 = st.columns(2)
-        if q1.button("📋 Summarize this patient", key=f"copilot_q_summary_{pid}", use_container_width=True):
-            st.session_state[pending_key] = (
+        q1.button(
+            "📋 Summarize this patient",
+            key=f"copilot_q_summary_{pid}",
+            use_container_width=True,
+            on_click=_queue_copilot_turn,
+            args=(
+                pending_key,
                 "Give me a brief summary of this patient — active medications and any "
-                "recent labs or history I should be aware of."
-            )
-            st.rerun()
-        if q2.button("🧪 Any recent lab results?", key=f"copilot_q_labs_{pid}", use_container_width=True):
-            st.session_state[pending_key] = "What are this patient's most recent lab results?"
-            st.rerun()
+                "recent labs or history I should be aware of.",
+            ),
+        )
+        q2.button(
+            "🧪 Any recent lab results?",
+            key=f"copilot_q_labs_{pid}",
+            use_container_width=True,
+            on_click=_queue_copilot_turn,
+            args=(pending_key, "What are this patient's most recent lab results?"),
+        )
 
         qa1, qa2 = st.columns(2)
-        if qa1.button("💊 Refill his Lisinopril", key=f"copilot_qa_refill_{pid}", use_container_width=True):
-            st.session_state[pending_key] = "Refill his Lisinopril."
-            st.rerun()
-        if qa2.button("➕ Prescribe aspirin for pain", key=f"copilot_qa_aspirin_{pid}", use_container_width=True):
-            st.session_state[pending_key] = "Prescribe aspirin for his joint pain."
-            st.rerun()
+        qa1.button(
+            "💊 Refill his Lisinopril",
+            key=f"copilot_qa_refill_{pid}",
+            use_container_width=True,
+            on_click=_queue_copilot_turn,
+            args=(pending_key, "Refill his Lisinopril."),
+        )
+        qa2.button(
+            "➕ Prescribe aspirin for pain",
+            key=f"copilot_qa_aspirin_{pid}",
+            use_container_width=True,
+            on_click=_queue_copilot_turn,
+            args=(pending_key, "Prescribe aspirin for his joint pain."),
+        )
+        show_custom_input = st.toggle(
+            "⌨️ Ask a custom question",
+            key=f"copilot_show_custom_{pid}",
+        )
     else:
         suggested_med = _copilot_suggested_refill_med(active_med_names)
         if suggested_med is not None:
@@ -1554,23 +1601,41 @@ def _copilot_dialog(pid: str, name: str, meds_summary: str, active_med_names=Non
                     "Yes, go ahead and refill it at the correct guideline dose and "
                     "send it to the pharmacy."
                 )
-            if c1.button(yes_label, key=f"copilot_confirm_yes_{pid}", use_container_width=True):
-                st.session_state[pending_key] = yes_msg
-                st.rerun()
-            if c2.button("🚫 No, take no action", key=f"copilot_confirm_no_{pid}", use_container_width=True):
-                st.session_state[pending_key] = "No, don't take any action for now."
-                st.rerun()
+            c1.button(
+                yes_label,
+                key=f"copilot_confirm_yes_{pid}",
+                use_container_width=True,
+                on_click=_queue_copilot_turn,
+                args=(pending_key, yes_msg),
+            )
+            c2.button(
+                "🚫 No, take no action",
+                key=f"copilot_confirm_no_{pid}",
+                use_container_width=True,
+                on_click=_queue_copilot_turn,
+                args=(pending_key, "No, don't take any action for now."),
+            )
 
-    # Free-text ask (a form avoids the st.chat_input container restriction).
-    with st.form(key=f"copilot_form_{pid}", clear_on_submit=True):
-        txt = st.text_input("Ask about this patient or request an action", key=f"copilot_txt_{pid}")
-        submitted = st.form_submit_button("Send")
-    if submitted and txt and txt.strip():
-        st.session_state[pending_key] = txt.strip()
-        st.rerun()
+    # Keep the fresh modal focused on one-click actions. The free-text form is
+    # opt-in before the first turn and automatically available for follow-ups.
+    if show_custom_input:
+        input_key = f"copilot_txt_{pid}"
+        with st.form(key=f"copilot_form_{pid}", clear_on_submit=True):
+            st.text_input(
+                "Ask about this patient or request an action",
+                key=input_key,
+            )
+            st.form_submit_button(
+                "Send",
+                on_click=_queue_copilot_form_turn,
+                args=(pending_key, input_key),
+            )
 
-    if st.button("Close", key=f"copilot_close_{pid}"):
-        st.session_state["ehr_copilot_open"] = False
+    if st.button(
+        "Close",
+        key=f"copilot_close_{pid}",
+        on_click=_close_copilot_dialog,
+    ):
         st.rerun()
 
 

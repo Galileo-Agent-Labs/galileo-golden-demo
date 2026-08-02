@@ -73,6 +73,12 @@ Thumbs.db
 .env.*.local
 .webui_secret_key
 
+# Evercrest deploy: keep the *.example / *.template files, ignore any filled-in
+# real env or secrets that resolve from 1Password.
+config/evercrest/*.env
+!config/evercrest/*.example
+.streamlit/secrets.evercrest.toml
+
 # macOS installer private/generated material
 config/macos/*.env
 transfer/*

@@ -1265,8 +1265,17 @@ def _ensure_session_and_agent(factory, domain_name, selected_provider, selected_
     if galileo_logger_key not in st.session_state:
         full_config = st.session_state.get(f"full_domain_config_{domain_name}", {})
         galileo_config = full_config.get("galileo", {})
-        project_name = galileo_config.get("project") or f"galileo-demo-{domain_name}"
-        log_stream = galileo_config.get("log_stream", "default")
+        # A hosted single-tenant deploy (e.g. Evercrest) can point every domain at
+        # one project/log-stream via secrets without editing per-domain config.
+        project_name = (
+            os.getenv("GALILEO_PROJECT")
+            or galileo_config.get("project")
+            or f"galileo-demo-{domain_name}"
+        )
+        log_stream = (
+            os.getenv("GALILEO_LOG_STREAM")
+            or galileo_config.get("log_stream", "default")
+        )
         try:
             galileo_logger = create_galileo_logger(project_name, log_stream)
             galileo_logger.enable_agent_control()
@@ -1673,8 +1682,16 @@ def main():
         # Create pages dictionary for st.navigation
         pages = []
         
-        # Determine default domain (prefer "finance" if it exists, otherwise first domain)
-        default_domain = "finance" if "finance" in available_domains else available_domains[0]
+        # Determine the default landing domain. A DEFAULT_DOMAIN env/secret wins
+        # (so a hosted Evercrest deploy opens straight on the healthcare EHR at
+        # "/"); otherwise prefer "finance", else the first discovered domain.
+        _env_default = os.getenv("DEFAULT_DOMAIN", "").strip().lower()
+        if _env_default and _env_default in available_domains:
+            default_domain = _env_default
+        elif "finance" in available_domains:
+            default_domain = "finance"
+        else:
+            default_domain = available_domains[0]
         
         for domain in available_domains:
             try:

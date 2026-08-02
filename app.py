@@ -1573,7 +1573,10 @@ def _copilot_dialog(pid: str, name: str, meds_summary: str, active_med_names=Non
         _process_copilot_turn(pending, pid, name, meds_summary)
         st.rerun()
 
-    if not st.session_state.get("messages"):
+    has_messages = bool(st.session_state.get("messages"))
+    show_custom_input = has_messages
+
+    if not has_messages:
         # Starter shortcuts — shown only on a fresh conversation, then hidden.
         q1, q2 = st.columns(2)
         q1.button(
@@ -1610,6 +1613,10 @@ def _copilot_dialog(pid: str, name: str, meds_summary: str, active_med_names=Non
             on_click=_queue_copilot_turn,
             args=(pending_key, "Prescribe aspirin for his joint pain."),
         )
+        show_custom_input = st.toggle(
+            "⌨️ Ask a custom question",
+            key=f"copilot_show_custom_{pid}",
+        )
     else:
         suggested_med = _copilot_suggested_refill_med(active_med_names)
         if suggested_med is not None:
@@ -1642,13 +1649,18 @@ def _copilot_dialog(pid: str, name: str, meds_summary: str, active_med_names=Non
                 args=(pending_key, "No, don't take any action for now."),
             )
 
-    # Free-text ask (a form avoids the st.chat_input container restriction).
-    with st.form(key=f"copilot_form_{pid}", clear_on_submit=True):
-        txt = st.text_input("Ask about this patient or request an action", key=f"copilot_txt_{pid}")
-        submitted = st.form_submit_button("Send")
-    if submitted and txt and txt.strip():
-        st.session_state[pending_key] = txt.strip()
-        st.rerun()
+    # Keep the fresh modal focused on one-click actions. The free-text form is
+    # opt-in before the first turn and automatically available for follow-ups.
+    if show_custom_input:
+        with st.form(key=f"copilot_form_{pid}", clear_on_submit=True):
+            txt = st.text_input(
+                "Ask about this patient or request an action",
+                key=f"copilot_txt_{pid}",
+            )
+            submitted = st.form_submit_button("Send")
+        if submitted and txt and txt.strip():
+            st.session_state[pending_key] = txt.strip()
+            st.rerun()
 
     if st.button("Close", key=f"copilot_close_{pid}"):
         st.session_state["ehr_copilot_open"] = False

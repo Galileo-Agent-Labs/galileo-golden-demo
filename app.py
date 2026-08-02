@@ -1,29 +1,21 @@
 """
 Galileo Demo App
 """
-# Corporate TLS interception (e.g. Cisco Umbrella) re-signs HTTPS with a root CA
-# that Python's bundled certifi does not trust, which breaks hosted providers
-# like OpenAI/Galileo with CERTIFICATE_VERIFY_FAILED. truststore makes Python
-# verify against the OS trust store (macOS keychain / Windows / Linux), which
-# already trusts the corporate root. It is a harmless no-op when there is no
-# interception, and MUST run before any HTTPS client is created.
-try:
-    import truststore
-
-    truststore.inject_into_ssl()
-except Exception:
-    pass
-
+import os
 import uuid
 from datetime import datetime
 from typing import Optional
-import streamlit as st
-import os
 import io
+
+# Use the OS trust store before importing HTTP client stacks.
+from setup_env import inject_system_truststore, setup_environment
+
+inject_system_truststore()
+
+import streamlit as st
 
 # Load environment from secrets before importing domain/agent modules.
 from dotenv import load_dotenv
-from setup_env import setup_environment
 
 # Load environment variables
 load_dotenv()
@@ -74,12 +66,27 @@ def _models_for_provider(domain_info: dict, provider: str) -> tuple[list[str], s
         models = domain_info.get("bedrock_models") or ["mistral.ministral-3-14b-instruct", "mistral.ministral-3-8b-instruct"]
         default = domain_info.get("bedrock_default_model") or models[0]
     else:
-        models = domain_info.get("local_models") or domain_info.get("available_models") or ["gemma4"]
-        default = (
-            domain_info.get("local_default_model")
-            or domain_info.get("default_model")
-            or models[0]
+        from helpers.llm_utils import (
+            get_default_chat_model,
+            get_local_llm_backend,
+            list_local_models,
         )
+
+        if get_local_llm_backend() == "mlx":
+            default = get_default_chat_model(provider="local")
+            try:
+                models = list_local_models()
+            except ConnectionError:
+                models = []
+            if default not in models:
+                models.insert(0, default)
+        else:
+            models = domain_info.get("local_models") or domain_info.get("available_models") or ["gemma4"]
+            default = (
+                domain_info.get("local_default_model")
+                or domain_info.get("default_model")
+                or models[0]
+            )
     return models, default
 
 
@@ -131,8 +138,8 @@ def render_model_settings(domain_name: str, domain_config_key: str) -> tuple[str
     provider_options = configured_providers()
     if not provider_options:
         st.error(
-            "No LLM provider is configured. Set `ollama_base_url`, `openai_api_key`, "
-            "or `bedrock_api_key` in `.streamlit/secrets.toml`."
+            "No LLM provider is configured. Set `ollama_base_url`, `mlx_base_url`, "
+            "`openai_api_key`, or `bedrock_api_key` in `.streamlit/secrets.toml`."
         )
         st.stop()
 
@@ -146,8 +153,10 @@ def render_model_settings(domain_name: str, domain_config_key: str) -> tuple[str
         st.session_state[prev_provider_key] = st.session_state[provider_key]
 
     prev_provider = st.session_state[prev_provider_key]
+    from helpers.llm_utils import get_local_provider_label
+
     provider_labels = {
-        "local": "Local (Ollama)",
+        "local": get_local_provider_label(),
         "hosted": "Hosted (OpenAI)",
         "bedrock": "Bedrock (AWS)",
     }
@@ -203,7 +212,7 @@ def render_model_settings(domain_name: str, domain_config_key: str) -> tuple[str
         index=model_index,
         key=f"model_select_{domain_name}",
         help={
-            "local": "Ollama model used for chat and experiments",
+            "local": f"{get_local_provider_label()} model used for chat and experiments",
             "hosted": "OpenAI model used for chat and experiments",
             "bedrock": "AWS Bedrock model used for chat and experiments",
         }.get(selected_provider, "Model used for chat and experiments"),
@@ -574,11 +583,13 @@ def render_experiments_page(domain_name: str, domain_config, agent_factory):
         # Model used for this experiment (same as sidebar selection)
         experiment_model = st.session_state.get(f"selected_model_{domain_name}") or st.session_state.get(f"domain_config_{domain_name}", {}).get("default_model")
         experiment_provider = st.session_state.get(f"llm_provider_{domain_name}", "local")
+        from helpers.llm_utils import get_local_provider_label
+
         provider_label = {
             "hosted": "OpenAI",
             "bedrock": "Bedrock",
-            "local": "Ollama",
-        }.get(_normalize_provider(experiment_provider), "Ollama")
+            "local": get_local_provider_label().removeprefix("Local (").removesuffix(")"),
+        }.get(_normalize_provider(experiment_provider), get_local_provider_label())
         st.caption(
             f"Provider: **{provider_label}** | Model: **{experiment_model or 'default'}** (change in sidebar)"
         )

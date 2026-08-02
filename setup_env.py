@@ -1,23 +1,32 @@
 """
 Environment Setup - Load secrets and set environment variables
 """
-# Verify TLS against the OS trust store so hosted providers (OpenAI/Galileo) work
-# behind corporate TLS interception (e.g. Cisco Umbrella), whose root CA the
-# bundled certifi doesn't include. No-op without interception. Imported early by
-# both the app and setup_vectordb.py, so this covers every entry point.
-try:
-    import truststore
-
-    truststore.inject_into_ssl()
-except Exception:
-    pass
-
 import os
 import warnings
 import toml
 import yaml
 from pathlib import Path
 from typing import Optional
+
+
+def inject_system_truststore() -> bool:
+    """Use the OS trust store once, when the optional dependency is installed."""
+    if os.environ.get("_SYSTEM_TRUSTSTORE_INJECTED") == "true":
+        return True
+    try:
+        import truststore
+    except ImportError:
+        return False
+
+    truststore.inject_into_ssl()
+    os.environ["_SYSTEM_TRUSTSTORE_INJECTED"] = "true"
+    return True
+
+
+# Run before Galileo/OpenAI HTTP clients are imported. This lets managed Macs
+# trust corporate root CAs from Keychain while remaining a no-op when the
+# optional dependency has not been installed yet.
+inject_system_truststore()
 
 # Silence Galileo SDK span-serialization noise. The Galileo ingestion models
 # subclass the core span types and hold child spans in a discriminated union,
@@ -120,6 +129,9 @@ def setup_environment(domain_name: Optional[str] = None, domain_config: Optional
         
         # Base environment variables (always set)
         env_vars = {
+            # Local chat backend. Ollama remains the default for backward
+            # compatibility; set this to "mlx" to use an MLX-LM server.
+            "LOCAL_LLM_BACKEND": secrets.get("local_llm_backend", "ollama"),
             # No default: an unset ollama_base_url means "Local not configured".
             # Connections still fall back to localhost via get_ollama_base_url().
             "OLLAMA_BASE_URL": secrets.get("ollama_base_url", ""),
@@ -128,6 +140,16 @@ def setup_environment(domain_name: Optional[str] = None, domain_config: Optional
             ),
             "OLLAMA_EMBEDDING_MODEL": secrets.get(
                 "ollama_embedding_model", "nomic-embed-text"
+            ),
+            "MLX_BASE_URL": secrets.get("mlx_base_url", ""),
+            "MLX_API_KEY": secrets.get("mlx_api_key", "local"),
+            "MLX_DEFAULT_CHAT_MODEL": secrets.get(
+                "mlx_default_chat_model",
+                "mlx-community/gemma-4-26b-a4b-it-4bit",
+            ),
+            "MLX_EMBEDDING_MODEL": secrets.get(
+                "mlx_embedding_model",
+                "sentence-transformers/all-MiniLM-L6-v2",
             ),
             "OPENAI_API_KEY": secrets.get("openai_api_key", ""),
             "OPENAI_DEFAULT_CHAT_MODEL": secrets.get(
@@ -187,6 +209,7 @@ def setup_environment(domain_name: Optional[str] = None, domain_config: Optional
         # environment. Other empty keys are left as-is (only warned about).
         _AUTHORITATIVE_KEYS = {
             "OLLAMA_BASE_URL",
+            "MLX_BASE_URL",
             "OPENAI_API_KEY",
             "AWS_BEARER_TOKEN_BEDROCK",
         }

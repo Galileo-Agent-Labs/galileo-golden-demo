@@ -1544,6 +1544,17 @@ def _copilot_suggested_refill_med(active_med_names):
     return ""
 
 
+def _queue_copilot_turn(pending_key: str, prompt: str):
+    """Queue a copilot prompt before Streamlit reruns the dialog fragment.
+
+    Button callbacks run before the automatic fragment rerun. That lets the
+    dialog consume the pending prompt at its top and start the request
+    immediately; setting it in the button body and calling ``st.rerun()`` can
+    return to the unchanged starter form without ever processing the prompt.
+    """
+    st.session_state[pending_key] = prompt
+
+
 @st.dialog(f"🩺 {HOSPITAL_NAME} Clinical Assistant", width="large")
 def _copilot_dialog(pid: str, name: str, meds_summary: str, active_med_names=None):
     """Copilot modal: streaming chat + action cards, scoped to one patient."""
@@ -1565,23 +1576,40 @@ def _copilot_dialog(pid: str, name: str, meds_summary: str, active_med_names=Non
     if not st.session_state.get("messages"):
         # Starter shortcuts — shown only on a fresh conversation, then hidden.
         q1, q2 = st.columns(2)
-        if q1.button("📋 Summarize this patient", key=f"copilot_q_summary_{pid}", use_container_width=True):
-            st.session_state[pending_key] = (
+        q1.button(
+            "📋 Summarize this patient",
+            key=f"copilot_q_summary_{pid}",
+            use_container_width=True,
+            on_click=_queue_copilot_turn,
+            args=(
+                pending_key,
                 "Give me a brief summary of this patient — active medications and any "
-                "recent labs or history I should be aware of."
-            )
-            st.rerun()
-        if q2.button("🧪 Any recent lab results?", key=f"copilot_q_labs_{pid}", use_container_width=True):
-            st.session_state[pending_key] = "What are this patient's most recent lab results?"
-            st.rerun()
+                "recent labs or history I should be aware of.",
+            ),
+        )
+        q2.button(
+            "🧪 Any recent lab results?",
+            key=f"copilot_q_labs_{pid}",
+            use_container_width=True,
+            on_click=_queue_copilot_turn,
+            args=(pending_key, "What are this patient's most recent lab results?"),
+        )
 
         qa1, qa2 = st.columns(2)
-        if qa1.button("💊 Refill his Lisinopril", key=f"copilot_qa_refill_{pid}", use_container_width=True):
-            st.session_state[pending_key] = "Refill his Lisinopril."
-            st.rerun()
-        if qa2.button("➕ Prescribe aspirin for pain", key=f"copilot_qa_aspirin_{pid}", use_container_width=True):
-            st.session_state[pending_key] = "Prescribe aspirin for his joint pain."
-            st.rerun()
+        qa1.button(
+            "💊 Refill his Lisinopril",
+            key=f"copilot_qa_refill_{pid}",
+            use_container_width=True,
+            on_click=_queue_copilot_turn,
+            args=(pending_key, "Refill his Lisinopril."),
+        )
+        qa2.button(
+            "➕ Prescribe aspirin for pain",
+            key=f"copilot_qa_aspirin_{pid}",
+            use_container_width=True,
+            on_click=_queue_copilot_turn,
+            args=(pending_key, "Prescribe aspirin for his joint pain."),
+        )
     else:
         suggested_med = _copilot_suggested_refill_med(active_med_names)
         if suggested_med is not None:
@@ -1599,12 +1627,20 @@ def _copilot_dialog(pid: str, name: str, meds_summary: str, active_med_names=Non
                     "Yes, go ahead and refill it at the correct guideline dose and "
                     "send it to the pharmacy."
                 )
-            if c1.button(yes_label, key=f"copilot_confirm_yes_{pid}", use_container_width=True):
-                st.session_state[pending_key] = yes_msg
-                st.rerun()
-            if c2.button("🚫 No, take no action", key=f"copilot_confirm_no_{pid}", use_container_width=True):
-                st.session_state[pending_key] = "No, don't take any action for now."
-                st.rerun()
+            c1.button(
+                yes_label,
+                key=f"copilot_confirm_yes_{pid}",
+                use_container_width=True,
+                on_click=_queue_copilot_turn,
+                args=(pending_key, yes_msg),
+            )
+            c2.button(
+                "🚫 No, take no action",
+                key=f"copilot_confirm_no_{pid}",
+                use_container_width=True,
+                on_click=_queue_copilot_turn,
+                args=(pending_key, "No, don't take any action for now."),
+            )
 
     # Free-text ask (a form avoids the st.chat_input container restriction).
     with st.form(key=f"copilot_form_{pid}", clear_on_submit=True):

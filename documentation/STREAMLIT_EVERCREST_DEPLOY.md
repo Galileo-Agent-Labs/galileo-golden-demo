@@ -2,8 +2,9 @@
 
 Deploys the **practitioner EHR frontend** (the self-contained chart in
 `domains/healthcare/ehr_data.py` + `ehr_theme.py`, wired through `app.py`) to
-Streamlit Community Cloud, pointed at the Evercrest Galileo project, backed by
-OpenAI + PostgreSQL/pgvector.
+Streamlit Community Cloud as **its own app**, pointed at the Evercrest Galileo
+project, and **reusing the same Neon Postgres backend** as the existing
+golden-demo deployment.
 
 The app is driven entirely by secrets — no code fork per tenant:
 `default_domain`, `galileo_project`, and `galileo_log_stream` all come from the
@@ -16,12 +17,13 @@ open on the Evercrest EHR.
 - Branch: `evercrest-ehr-frontend` (this branch)
 - Entrypoint: `app.py`
 - Python: `3.12`
-- Suggested URL: `evercrest-demo.streamlit.app`
+- Suggested URL: `ehr-assistant.streamlit.app` (this is a **separate** app from
+  the main golden-demo deployment; only the database is shared)
 
 ## Secrets — the golden rule
 
 **Never commit real keys.** The Galileo API key lives in 1Password (item
-`EHR Assistant`); OpenAI and Postgres are separate items. Two supported paths:
+`EHR Assistant`). Two supported paths:
 
 - **Streamlit Cloud:** paste `.streamlit/secrets.evercrest.toml.template` (filled
   in) into the app's **Settings → Secrets**.
@@ -34,45 +36,51 @@ open on the Evercrest EHR.
 Traces land in the Galileo project **`EHR Assistant`**, log stream
 **`chart-agent`** (set via `galileo_project` / `galileo_log_stream` in secrets).
 
-## 1. Provision PostgreSQL
+## 1. Reuse the shared Neon Postgres — do NOT provision or re-seed
 
-A network-reachable PostgreSQL with the `vector` extension:
+This app points at the **same** Neon database the main golden-demo deployment
+already uses. The healthcare tables (`healthcare_patient/medication/history`)
+and the hosted RAG index are already loaded there, so:
 
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
+- **Do not** run `helpers/setup_vectordb.py` (that step is destructive and
+  already done on the shared DB).
+- **Do not** provision a new database.
+
+Just supply the **same** `postgres_url` this app's `secrets` as the main app
+uses. Get it from the existing deployment's **Streamlit Cloud → Settings →
+Secrets** (or 1Password, if you keep it there). Use the **pooled** Neon URL for
+the runtime, with `?sslmode=require`:
+
+```toml
+postgres_url = "postgresql://USER:PASSWORD@ep-xxx-pooler.<region>.aws.neon.tech/neondb?sslmode=require"
 ```
 
-Use TLS (`sslmode=require`). If the provider offers direct + pooled URLs, use the
-direct URL to initialise and the pooled URL in Streamlit.
+Because both apps use `domain = healthcare` with OpenAI embeddings, they resolve
+to the same RAG index name, so this app reads the existing embeddings — no
+rebuild needed. Both apps only **read** the healthcare data, so sharing is safe.
 
-## 2. Initialise the healthcare data
+> The EHR **chart** renders from bundled data with no database at all; the shared
+> Neon DB only powers the copilot's retrieval + tool calls.
 
-Create a local `.streamlit/secrets.toml` from the template with the **direct**
-`postgres_url`, then:
+## 2. Create the Streamlit app
 
-```bash
-python helpers/setup_vectordb.py healthcare
-```
+In Streamlit Community Cloud, **New app → From existing repo**:
 
-This loads the healthcare patient/medication/history tables and the RAG index.
-It is destructive only to the healthcare collection it manages.
+- Repository `Galileo-Agent-Labs/galileo-golden-demo`, branch
+  `evercrest-ehr-frontend`, main file `app.py`, Python 3.12.
+- Give it a distinct URL (e.g. `ehr-assistant`) so it doesn't collide with the
+  main app.
+- In **Advanced settings → Secrets**, paste the filled-in
+  `.streamlit/secrets.evercrest.toml.template`: the `EHR Assistant` Galileo
+  values **plus the same Neon `postgres_url`** from step 1.
 
-> Note: the EHR **chart** itself renders from bundled data with no database, so
-> the UI comes up even before this step. The database powers the copilot's
-> retrieval + tool calls.
+Do not commit `.streamlit/secrets.toml`.
 
-## 3. Create the Streamlit app
-
-In Streamlit Community Cloud, create an app with the coordinates above, select
-Python 3.12, and paste the filled-in secrets into **Advanced settings → Secrets**
-(swap the direct DB URL for the pooled one before saving).
-
-Do not upload a localhost URL and do not commit `.streamlit/secrets.toml`.
-
-## 4. Verify
+## 3. Verify
 
 1. `/` opens the Evercrest Health EHR (patient banner, vitals flowsheet, labs).
-2. The patient selector is populated (P001–P030).
-3. Open **Clinical Assistant**, ask a medication question → grounded response.
+2. The patient selector is populated (P001–P030) — served from bundled data.
+3. Open **Clinical Assistant**, ask a medication question → grounded response
+   (this confirms the shared Neon DB + RAG index are reachable).
 4. The trace appears in the `EHR Assistant` Galileo project / `chart-agent`
    log stream.

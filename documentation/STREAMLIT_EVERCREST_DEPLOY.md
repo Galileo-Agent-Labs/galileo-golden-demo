@@ -31,8 +31,8 @@ open on the Evercrest EHR.
   ```
   (`config/evercrest/evercrest.env.example` is the same shape without 1Password.)
 
-> Confirm the exact Galileo **project** name before go-live — the templates use
-> `evercrest-health` (as requested); an earlier branch used `evercrest-demo`.
+Traces land in the Galileo project **`EHR Assistant`**, log stream
+**`chart-agent`** (set via `galileo_project` / `galileo_log_stream` in secrets).
 
 ## 1. Provision PostgreSQL
 
@@ -74,5 +74,5 @@ Do not upload a localhost URL and do not commit `.streamlit/secrets.toml`.
 1. `/` opens the Evercrest Health EHR (patient banner, vitals flowsheet, labs).
 2. The patient selector is populated (P001–P030).
 3. Open **Clinical Assistant**, ask a medication question → grounded response.
-4. The trace appears in the `evercrest-health` Galileo project / `healthcare`
+4. The trace appears in the `EHR Assistant` Galileo project / `chart-agent`
    log stream.

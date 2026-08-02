@@ -84,9 +84,14 @@ class DomainRAGSystem:
 
             setup_environment(self.domain_name, domain_config.config)
 
-            if not os.environ.get("POSTGRES_PASSWORD"):
+            if not (
+                os.environ.get("POSTGRES_URL")
+                or os.environ.get("DATABASE_URL")
+                or os.environ.get("POSTGRES_PASSWORD")
+            ):
                 raise ValueError(
-                    "POSTGRES_PASSWORD not found. Please add it to .streamlit/secrets.toml"
+                    "PostgreSQL credentials not found. Add postgres_url or "
+                    "postgres_password to .streamlit/secrets.toml"
                 )
 
             # Selects the prebuilt index matching the active provider (Ollama,

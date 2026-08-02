@@ -167,14 +167,23 @@ def setup_environment(domain_name: Optional[str] = None, domain_config: Optional
             "POSTGRES_URL": secrets.get("postgres_url", ""),
             # Optional override; hosted hosts require SSL (auto-applied for remotes).
             "POSTGRES_SSLMODE": secrets.get("postgres_sslmode", ""),
-            "ENVIRONMENT": secrets.get("environment", "local")
+            "ENVIRONMENT": secrets.get("environment", "local"),
+            "DEFAULT_DOMAIN": secrets.get("default_domain", "healthcare"),
         }
         
         # If domain is specified, add domain-specific settings
         if domain_name:
-            project_name = get_domain_project_name(domain_name, domain_config)
-            log_stream = "default"
-            if domain_config and "galileo" in domain_config and "log_stream" in domain_config["galileo"]:
+            project_name = secrets.get("galileo_project", "") or get_domain_project_name(
+                domain_name, domain_config
+            )
+            configured_log_stream = secrets.get("galileo_log_stream", "")
+            log_stream = configured_log_stream or "default"
+            if (
+                not configured_log_stream
+                and domain_config
+                and "galileo" in domain_config
+                and "log_stream" in domain_config["galileo"]
+            ):
                 log_stream = domain_config["galileo"]["log_stream"]
             
             env_vars["GALILEO_PROJECT"] = project_name

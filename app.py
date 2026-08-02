@@ -35,7 +35,7 @@ if not os.getenv('_GALILEO_ENV_LOADED'):
 
 from galileo import galileo_context, GalileoLogger
 from agent_factory import AgentFactory
-from domain_manager import DomainManager
+from domain_manager import DomainManager, select_default_domain
 from langchain_core.messages import AIMessage, HumanMessage
 from agent_frameworks.langgraph.langgraph_rag import get_domain_rag_system
 from helpers.galileo_api_helpers import (
@@ -1245,8 +1245,15 @@ def _ensure_session_and_agent(factory, domain_name, selected_provider, selected_
     if galileo_logger_key not in st.session_state:
         full_config = st.session_state.get(f"full_domain_config_{domain_name}", {})
         galileo_config = full_config.get("galileo", {})
-        project_name = galileo_config.get("project") or f"galileo-demo-{domain_name}"
-        log_stream = galileo_config.get("log_stream", "default")
+        project_name = (
+            os.environ.get("GALILEO_PROJECT")
+            or galileo_config.get("project")
+            or f"galileo-demo-{domain_name}"
+        )
+        log_stream = (
+            os.environ.get("GALILEO_LOG_STREAM")
+            or galileo_config.get("log_stream", "default")
+        )
         try:
             galileo_logger = create_galileo_logger(project_name, log_stream)
             galileo_logger.enable_agent_control()
@@ -1699,8 +1706,11 @@ def main():
         # Create pages dictionary for st.navigation
         pages = []
         
-        # Determine default domain (prefer "finance" if it exists, otherwise first domain)
-        default_domain = "finance" if "finance" in available_domains else available_domains[0]
+        # The hosted Evercrest deployment lands on healthcare by default. Other
+        # deployments can override this with default_domain in secrets.toml.
+        default_domain = select_default_domain(
+            available_domains, os.environ.get("DEFAULT_DOMAIN")
+        )
         
         for domain in available_domains:
             try:

@@ -10,7 +10,6 @@ from typing import List, Literal, Optional
 
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_ollama import ChatOllama, OllamaEmbeddings
 
 LLMProvider = Literal["local", "hosted", "bedrock"]
 
@@ -383,6 +382,10 @@ def get_chat_model(
             kwargs["name"] = name
         return ChatBedrockConverse(**kwargs)
 
+    # Local providers are optional in the hosted deployment, so avoid importing
+    # their client unless a deployment explicitly configures Ollama.
+    from langchain_ollama import ChatOllama
+
     ensure_ollama_model_available(model, model_kind="chat model")
     kwargs = {
         "model": model,
@@ -425,6 +428,8 @@ def get_embeddings(
             model_id=embedding_model,
             region_name=get_bedrock_region(),
         )
+
+    from langchain_ollama import OllamaEmbeddings
 
     ensure_ollama_model_available(embedding_model, model_kind="embedding model")
     return OllamaEmbeddings(model=embedding_model, base_url=get_ollama_base_url())

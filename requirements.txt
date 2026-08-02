@@ -1,29 +1,25 @@
-streamlit
-galileo
-agent-control-sdk[galileo]>=8.0.0
-agent-control-evaluators>=8.0.0
-agent-control-evaluator-galileo>=8.0.0
-yfinance
-alpha-vantage
-chromadb
-python-dotenv
-langchain
-langchain-core
-langchain-ollama
-langchain-openai
-langchain-aws
-boto3
-openai
-# Verify TLS against the OS trust store so hosted providers work behind
-# corporate TLS interception (e.g. Cisco Umbrella) whose root CA certifi lacks.
-truststore
-langgraph
-langchain-postgres
-psycopg[binary]
-langchain-text-splitters
-langchain-community
-langchain-classic
-pyyaml
-toml
-unstructured
-unstructured[pdf]
+# Hosted Evercrest runtime, pinned to the versions verified for this branch.
+# Optional local Ollama/MLX and Bedrock packages are intentionally excluded to
+# keep Streamlit Community Cloud below its dependency and memory limits.
+streamlit==1.60.0
+galileo==2.6.0
+agent-control-sdk[galileo]==8.4.0
+agent-control-evaluators==8.4.0
+agent-control-evaluator-galileo==8.4.0
+python-dotenv==1.2.2
+langchain==1.3.14
+langchain-core==1.5.3
+langchain-openai==1.4.1
+openai==2.52.0
+truststore==0.10.4
+langgraph==1.2.10
+langchain-postgres==0.0.17
+psycopg[binary]==3.3.4
+langchain-text-splitters==1.1.2
+langchain-community==0.4.2
+langchain-classic==1.0.8
+pandas==3.0.5
+SQLAlchemy==2.0.51
+requests==2.34.2
+PyYAML==6.0.3
+toml==0.10.2

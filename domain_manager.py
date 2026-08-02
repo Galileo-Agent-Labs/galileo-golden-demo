@@ -8,6 +8,29 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass
 
 
+def select_default_domain(
+    available_domains: List[str], configured_default: Optional[str] = None
+) -> str:
+    """Choose the landing domain for a deployment.
+
+    A Streamlit deployment can set ``default_domain`` in secrets.toml. The
+    Evercrest healthcare experience is the preferred fallback for this hosted
+    branch, while finance remains the fallback for older deployments that
+    include it.
+    """
+    if not available_domains:
+        raise ValueError("No domains are available")
+
+    configured = (configured_default or "").strip()
+    if configured in available_domains:
+        return configured
+    if "healthcare" in available_domains:
+        return "healthcare"
+    if "finance" in available_domains:
+        return "finance"
+    return available_domains[0]
+
+
 @dataclass
 class DomainConfig:
     """Container for domain configuration data"""

@@ -1555,7 +1555,23 @@ def _queue_copilot_turn(pending_key: str, prompt: str):
     st.session_state[pending_key] = prompt
 
 
-@st.dialog(f"🩺 {HOSPITAL_NAME} Clinical Assistant", width="large")
+def _queue_copilot_form_turn(pending_key: str, input_key: str):
+    """Queue a non-empty custom prompt from the dialog form callback."""
+    prompt = str(st.session_state.get(input_key, "")).strip()
+    if prompt:
+        st.session_state[pending_key] = prompt
+
+
+def _close_copilot_dialog():
+    """Clear the persistent open flag for either dialog close control."""
+    st.session_state["ehr_copilot_open"] = False
+
+
+@st.dialog(
+    f"🩺 {HOSPITAL_NAME} Clinical Assistant",
+    width="large",
+    on_dismiss=_close_copilot_dialog,
+)
 def _copilot_dialog(pid: str, name: str, meds_summary: str, active_med_names=None):
     """Copilot modal: streaming chat + action cards, scoped to one patient."""
     st.caption(f"Patient in context: **{name}** (`{pid}`)")
@@ -1571,7 +1587,11 @@ def _copilot_dialog(pid: str, name: str, meds_summary: str, active_med_names=Non
     pending = st.session_state.pop(pending_key, None)
     if pending:
         _process_copilot_turn(pending, pid, name, meds_summary)
-        st.rerun()
+        # This code is running in the dialog's fragment rerun (triggered by the
+        # preset callback). Refresh only that fragment so the completed reply is
+        # drawn immediately. A full-app rerun invalidates the active dialog
+        # fragment and can leave only the user's prompt on screen.
+        st.rerun(scope="fragment")
 
     has_messages = bool(st.session_state.get("messages"))
     show_custom_input = has_messages
@@ -1652,18 +1672,25 @@ def _copilot_dialog(pid: str, name: str, meds_summary: str, active_med_names=Non
     # Keep the fresh modal focused on one-click actions. The free-text form is
     # opt-in before the first turn and automatically available for follow-ups.
     if show_custom_input:
+        input_key = f"copilot_txt_{pid}"
         with st.form(key=f"copilot_form_{pid}", clear_on_submit=True):
-            txt = st.text_input(
+            st.text_input(
                 "Ask about this patient or request an action",
-                key=f"copilot_txt_{pid}",
+                key=input_key,
             )
-            submitted = st.form_submit_button("Send")
-        if submitted and txt and txt.strip():
-            st.session_state[pending_key] = txt.strip()
-            st.rerun()
+            st.form_submit_button(
+                "Send",
+                on_click=_queue_copilot_form_turn,
+                args=(pending_key, input_key),
+            )
 
-    if st.button("Close", key=f"copilot_close_{pid}"):
-        st.session_state["ehr_copilot_open"] = False
+    if st.button(
+        "Close",
+        key=f"copilot_close_{pid}",
+        on_click=_close_copilot_dialog,
+    ):
+        # The callback clears the flag before this full rerun, so the parent
+        # page no longer calls the dialog and it closes cleanly.
         st.rerun()
 
 

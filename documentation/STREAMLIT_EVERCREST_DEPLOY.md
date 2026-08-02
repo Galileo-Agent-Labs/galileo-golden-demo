@@ -20,8 +20,8 @@ open on the Evercrest EHR.
 
 ## Secrets — the golden rule
 
-**Never commit real keys.** The Galileo/OpenAI keys live in 1Password (item
-`evercrest-health`). Two supported paths:
+**Never commit real keys.** The Galileo API key lives in 1Password (item
+`EHR Assistant`); OpenAI and Postgres are separate items. Two supported paths:
 
 - **Streamlit Cloud:** paste `.streamlit/secrets.evercrest.toml.template` (filled
   in) into the app's **Settings → Secrets**.

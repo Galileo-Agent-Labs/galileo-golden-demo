@@ -1,0 +1,9 @@
+# Streamlit theme for the demo. Forcing a light base keeps the clinical EHR
+# (and the other domain chats) rendering consistently light regardless of the
+# viewer's OS/browser dark-mode preference, and matches the healthcare theme's
+# hospital-teal accent.
+[theme]
+base = "light"
+primaryColor = "#0d6a72"
+textColor = "#1b262c"
+font = "sans serif"

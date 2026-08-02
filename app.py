@@ -1,29 +1,21 @@
 """
 Galileo Demo App
 """
-# Corporate TLS interception (e.g. Cisco Umbrella) re-signs HTTPS with a root CA
-# that Python's bundled certifi does not trust, which breaks hosted providers
-# like OpenAI/Galileo with CERTIFICATE_VERIFY_FAILED. truststore makes Python
-# verify against the OS trust store (macOS keychain / Windows / Linux), which
-# already trusts the corporate root. It is a harmless no-op when there is no
-# interception, and MUST run before any HTTPS client is created.
-try:
-    import truststore
-
-    truststore.inject_into_ssl()
-except Exception:
-    pass
-
+import os
 import uuid
 from datetime import datetime
 from typing import Optional
-import streamlit as st
-import os
 import io
+
+# Use the OS trust store before importing HTTP client stacks.
+from setup_env import inject_system_truststore, setup_environment
+
+inject_system_truststore()
+
+import streamlit as st
 
 # Load environment from secrets before importing domain/agent modules.
 from dotenv import load_dotenv
-from setup_env import setup_environment
 
 # Load environment variables
 load_dotenv()
@@ -64,6 +56,15 @@ FRAMEWORK = "LangGraph"
 # Centralized so it's trivial to rename for a given audience.
 HOSPITAL_NAME = "Evercrest Health"
 
+# Self-contained EHR data + retro-clinical render layer for the practitioner
+# demo. The patient dataset travels with the frontend (enriched from the bundled
+# CSVs), so the chart renders with no database behind it, and ehr_theme styles it
+# to look like a real EHR.
+from domains.healthcare import ehr_data, ehr_theme
+
+# Attending shown in the EHR workstation top bar (demo persona).
+EHR_PRACTITIONER = "Dr. A. Morgan, MD"
+
 
 def _models_for_provider(domain_info: dict, provider: str) -> tuple[list[str], str]:
     """Return model options and default for the selected provider."""
@@ -74,12 +75,27 @@ def _models_for_provider(domain_info: dict, provider: str) -> tuple[list[str], s
         models = domain_info.get("bedrock_models") or ["mistral.ministral-3-14b-instruct", "mistral.ministral-3-8b-instruct"]
         default = domain_info.get("bedrock_default_model") or models[0]
     else:
-        models = domain_info.get("local_models") or domain_info.get("available_models") or ["gemma4"]
-        default = (
-            domain_info.get("local_default_model")
-            or domain_info.get("default_model")
-            or models[0]
+        from helpers.llm_utils import (
+            get_default_chat_model,
+            get_local_llm_backend,
+            list_local_models,
         )
+
+        if get_local_llm_backend() == "mlx":
+            default = get_default_chat_model(provider="local")
+            try:
+                models = list_local_models()
+            except ConnectionError:
+                models = []
+            if default not in models:
+                models.insert(0, default)
+        else:
+            models = domain_info.get("local_models") or domain_info.get("available_models") or ["gemma4"]
+            default = (
+                domain_info.get("local_default_model")
+                or domain_info.get("default_model")
+                or models[0]
+            )
     return models, default
 
 
@@ -131,8 +147,8 @@ def render_model_settings(domain_name: str, domain_config_key: str) -> tuple[str
     provider_options = configured_providers()
     if not provider_options:
         st.error(
-            "No LLM provider is configured. Set `ollama_base_url`, `openai_api_key`, "
-            "or `bedrock_api_key` in `.streamlit/secrets.toml`."
+            "No LLM provider is configured. Set `ollama_base_url`, `mlx_base_url`, "
+            "`openai_api_key`, or `bedrock_api_key` in `.streamlit/secrets.toml`."
         )
         st.stop()
 
@@ -146,8 +162,10 @@ def render_model_settings(domain_name: str, domain_config_key: str) -> tuple[str
         st.session_state[prev_provider_key] = st.session_state[provider_key]
 
     prev_provider = st.session_state[prev_provider_key]
+    from helpers.llm_utils import get_local_provider_label
+
     provider_labels = {
-        "local": "Local (Ollama)",
+        "local": get_local_provider_label(),
         "hosted": "Hosted (OpenAI)",
         "bedrock": "Bedrock (AWS)",
     }
@@ -203,7 +221,7 @@ def render_model_settings(domain_name: str, domain_config_key: str) -> tuple[str
         index=model_index,
         key=f"model_select_{domain_name}",
         help={
-            "local": "Ollama model used for chat and experiments",
+            "local": f"{get_local_provider_label()} model used for chat and experiments",
             "hosted": "OpenAI model used for chat and experiments",
             "bedrock": "AWS Bedrock model used for chat and experiments",
         }.get(selected_provider, "Model used for chat and experiments"),
@@ -574,11 +592,13 @@ def render_experiments_page(domain_name: str, domain_config, agent_factory):
         # Model used for this experiment (same as sidebar selection)
         experiment_model = st.session_state.get(f"selected_model_{domain_name}") or st.session_state.get(f"domain_config_{domain_name}", {}).get("default_model")
         experiment_provider = st.session_state.get(f"llm_provider_{domain_name}", "local")
+        from helpers.llm_utils import get_local_provider_label
+
         provider_label = {
             "hosted": "OpenAI",
             "bedrock": "Bedrock",
-            "local": "Ollama",
-        }.get(_normalize_provider(experiment_provider), "Ollama")
+            "local": get_local_provider_label().removeprefix("Local (").removesuffix(")"),
+        }.get(_normalize_provider(experiment_provider), get_local_provider_label())
         st.caption(
             f"Provider: **{provider_label}** | Model: **{experiment_model or 'default'}** (change in sidebar)"
         )
@@ -1325,93 +1345,26 @@ def render_chat_page(
 # Healthcare practitioner EHR page (chart-centric UI + copilot)
 # ---------------------------------------------------------------------------
 def _ehr_list_patients():
-    """Return [{patient_id, patient_name}] for the roster (cached per session)."""
+    """Return the patient roster [{patient_id, patient_name, ...}].
+
+    Reads from the self-contained ``ehr_data`` layer (bundled with the frontend)
+    so the roster and chart render with no database running. Cached per session.
+    """
     if "ehr_patients" in st.session_state:
         return st.session_state["ehr_patients"]
     try:
-        from helpers.sql_utils import execute_sql, relational_table_name
-        table = relational_table_name("healthcare", "patient")
-        res = execute_sql(
-            f'SELECT patient_id, patient_name FROM "{table}" ORDER BY patient_id'
-        )
-        rows = res.get("rows", []) if isinstance(res, dict) else []
-    except Exception as e:
-        print(f"⚠️ Failed to list patients: {e}")
+        rows = ehr_data.load_roster()
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"⚠️ Failed to load EHR roster: {e}")
         rows = []
     st.session_state["ehr_patients"] = rows
     return rows
 
 
 def _ehr_get_chart(pid: str) -> dict:
-    """Direct-SQL patient chart for the UI: demographics, active meds, history."""
-    from helpers.sql_utils import execute_sql, relational_table_name
-
-    def _rows(sql):
-        try:
-            res = execute_sql(sql)
-            return res.get("rows", []) if isinstance(res, dict) else []
-        except Exception as e:
-            print(f"⚠️ EHR chart query failed: {e}")
-            return []
-
-    pat = relational_table_name("healthcare", "patient")
-    med = relational_table_name("healthcare", "medication")
-    hist = relational_table_name("healthcare", "history")
-    demo = _rows(f"SELECT * FROM \"{pat}\" WHERE patient_id = '{pid}'")
-    meds = _rows(
-        f"SELECT medication, dosage, status, start_date FROM \"{med}\" "
-        f"WHERE patient_id = '{pid}' AND status = 'active' ORDER BY start_date"
-    )
-    events = _rows(
-        f"SELECT event_date, event_type, detail FROM \"{hist}\" "
-        f"WHERE patient_id = '{pid}' ORDER BY event_date DESC LIMIT 10"
-    )
-    return {
-        "patient_id": pid,
-        "demographics": demo[0] if demo else {},
-        "active_medications": meds,
-        "history": events,
-    }
-
-
-def _ehr_render_chart(chart: dict):
-    """Render the selected patient's chart: demographics, meds table, history."""
-    demo = chart.get("demographics", {})
-    name = demo.get("patient_name", chart.get("patient_id", ""))
-
-    st.markdown(f"### {name}  \n`{chart.get('patient_id','')}`")
-    cols = st.columns(3)
-    cols[0].caption("Type"); cols[0].write(demo.get("patient_type", "—"))
-    cols[1].caption("Phone"); cols[1].write(demo.get("phone_number", "—"))
-    cols[2].caption("Address"); cols[2].write(demo.get("address", "—"))
-
-    st.markdown("#### 💊 Active medications")
-    meds = chart.get("active_medications", [])
-    if meds:
-        st.table(
-            [
-                {
-                    "Medication": m.get("medication", ""),
-                    "Dosage": m.get("dosage", ""),
-                    "Started": m.get("start_date", ""),
-                }
-                for m in meds
-            ]
-        )
-    else:
-        st.caption("No active medications on file.")
-
-    st.markdown("#### 🗓️ Recent history")
-    events = chart.get("history", [])
-    if events:
-        for ev in events:
-            with st.container(border=True):
-                st.markdown(
-                    f"**{ev.get('event_date','')} · {ev.get('event_type','')}**  \n"
-                    f"{ev.get('detail','')}"
-                )
-    else:
-        st.caption("No recorded history.")
+    """Full self-contained patient chart (demographics, problems, meds, vitals,
+    labs, care team, coverage, encounters) — no database required."""
+    return ehr_data.get_chart(pid)
 
 
 def _process_copilot_turn(user_input: str, pid: str, name: str, meds_summary: str):
@@ -1621,7 +1574,14 @@ def render_healthcare_ehr_page(
 ):
     """Chart-centric practitioner EHR page with a copilot assistant."""
     selected_provider = _normalize_provider(selected_provider)
-    _ensure_session_and_agent(factory, domain_name, selected_provider, selected_model)
+    # The chart is fully self-contained (bundled dataset), so a failure to bring
+    # up the agent/observability stack must not stop it from rendering — only the
+    # copilot depends on the agent.
+    try:
+        _ensure_session_and_agent(factory, domain_name, selected_provider, selected_model)
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"⚠️ EHR agent init failed (chart still renders): {e}")
+        st.session_state.agent = st.session_state.get("agent")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -1629,19 +1589,20 @@ def render_healthcare_ehr_page(
         st.session_state.galileo_session_started = False
     st.session_state.domain_name = domain_name
 
-    st.title(f"🏥 {HOSPITAL_NAME}")
-    st.caption("Practitioner EHR · Clinical Assistant")
+    # Retro-clinical EHR skin + workstation top bar.
+    st.markdown(ehr_theme.app_style(), unsafe_allow_html=True)
+    st.markdown(
+        ehr_theme.render_topbar(EHR_PRACTITIONER, now=datetime.now()),
+        unsafe_allow_html=True,
+    )
 
     patients = _ehr_list_patients()
     if not patients:
-        st.error(
-            "No patients found. Make sure Postgres is running and the healthcare "
-            "tables are loaded (helpers/setup_vectordb.py)."
-        )
+        st.error("No patients on file for this demo dataset.")
         return
 
     options = [f"{p['patient_id']} — {p['patient_name']}" for p in patients]
-    top_left, top_right = st.columns([0.75, 0.25])
+    top_left, top_right = st.columns([0.78, 0.22])
     with top_left:
         selected_label = st.selectbox("Patient", options, key="ehr_patient_select")
     selected_pid = selected_label.split(" — ", 1)[0]
@@ -1653,26 +1614,39 @@ def render_healthcare_ehr_page(
         st.session_state["ehr_copilot_open"] = False
 
     chart = _ehr_get_chart(selected_pid)
-    demo = chart.get("demographics", {})
-    name = demo.get("patient_name", selected_pid)
-    active_meds = chart.get("active_medications", [])
+    name = chart.get("name", selected_pid)
+    active_meds = chart.get("medications", [])
     meds_summary = ", ".join(
-        f"{m.get('medication','')} {m.get('dosage','')}".strip()
+        f"{m.get('medication', '')} {m.get('sig', '')}".strip()
         for m in active_meds
     )
     active_med_names = [m.get("medication", "") for m in active_meds if m.get("medication")]
 
     with top_right:
         st.write("")  # vertical spacer to align with the selectbox
-        if st.button("🩺 Assistant", use_container_width=True, key="ehr_open_copilot"):
+        if st.button("🩺  Clinical Assistant", use_container_width=True, key="ehr_open_copilot"):
             st.session_state["ehr_copilot_open"] = True
 
-    _ehr_render_chart(chart)
+    # Banner + dense chart grid, rendered as one styled HTML block.
+    st.markdown(
+        '<div class="ehr-root">'
+        + ehr_theme.render_banner(chart)
+        + ehr_theme.render_chart(chart)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
 
     # Re-open the dialog on every rerun while it's flagged open so streaming turns
     # (which call st.rerun) keep the copilot visible instead of dismissing it.
     if st.session_state.get("ehr_copilot_open"):
-        _copilot_dialog(selected_pid, name, meds_summary, active_med_names)
+        if st.session_state.get("agent") is None:
+            st.warning(
+                "The clinical assistant is offline — the agent/LLM service isn't "
+                "available. The patient chart above is fully self-contained."
+            )
+            st.session_state["ehr_copilot_open"] = False
+        else:
+            _copilot_dialog(selected_pid, name, meds_summary, active_med_names)
 
 
 def create_domain_page(domain_name: str):

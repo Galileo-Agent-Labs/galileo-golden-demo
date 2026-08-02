@@ -72,6 +72,13 @@ Thumbs.db
 .env.local
 .env.*.local
 
+# macOS installer private/generated material
+config/macos/*.env
+transfer/*
+!transfer/README.md
+!transfer/*.example
+.runtime/
+
 # Logs
 *.log
 logs/

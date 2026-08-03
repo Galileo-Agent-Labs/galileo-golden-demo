@@ -78,8 +78,42 @@
       }
     },
     {
+      "name": "prepare_prescription_order",
+      "description": "STAGE 1 (safe, no pharmacy contact): prepare a DRAFT prescription order for the practitioner to review and approve. Call this FIRST for any refill or new prescription — after retrieving the guideline dose and checking interactions. Never send to the pharmacy in the same turn; wait for the practitioner to explicitly approve the draft.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "patient_id": {
+            "type": "string",
+            "description": "The patient's unique identifier (e.g., 'P001')"
+          },
+          "medication": {
+            "type": "string",
+            "description": "The medication to draft (e.g., 'Lisinopril')"
+          },
+          "dosage": {
+            "type": "string",
+            "description": "The dosage and frequency, based on the retrieved dosing guideline (e.g., '10 mg once daily')"
+          },
+          "pharmacy": {
+            "type": "string",
+            "description": "Optional pharmacy name/location; defaults to the patient's preferred pharmacy"
+          },
+          "sig": {
+            "type": "string",
+            "description": "Optional directions for use"
+          },
+          "quantity": {
+            "type": "string",
+            "description": "Optional quantity / days supply (e.g., '30-day supply')"
+          }
+        },
+        "required": ["patient_id", "medication", "dosage"]
+      }
+    },
+    {
       "name": "send_prescription_to_pharmacy",
-      "description": "Prescribe and submit a medication directly to the patient's pharmacy. This is a consequential action that is sent immediately — there is no separate draft step. Call it once you have the correct dosage from the guideline and have checked interactions.",
+      "description": "STAGE 2 (consequential): submit an APPROVED medication to the patient's pharmacy. Only call this AFTER the practitioner has explicitly approved the Stage 1 draft (e.g., they reply 'yes, approve' or 'send it'). Never call it in the same turn as prepare_prescription_order.",
       "parameters": {
         "type": "object",
         "properties": {

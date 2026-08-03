@@ -1376,6 +1376,35 @@ def _ehr_get_chart(pid: str) -> dict:
     return ehr_data.get_chart(pid)
 
 
+def _ehr_due_medication(chart: dict) -> dict | None:
+    """Return the active medication most in need of a refill for this patient.
+
+    Chart meds carry a ``refills`` count; the one with the fewest remaining
+    (0 = "REFILL DUE") is the one "running out". This keeps the quick-action
+    button generic ("Refill the medication that's due") and patient-agnostic
+    instead of hard-coding a drug name like Lisinopril.
+    """
+    meds = [m for m in (chart.get("medications") or []) if m.get("medication")]
+    if not meds:
+        return None
+
+    def _refills(m):
+        try:
+            return int(m.get("refills", 0))
+        except (TypeError, ValueError):
+            return 0
+
+    # Fewest refills first; ties keep chart order (earliest-started med).
+    return min(meds, key=_refills)
+
+
+def _open_copilot_with_prompt(pid: str, prompt: str):
+    """on_click for the chart-level quick actions: open the copilot modal and
+    queue a turn so the dialog runs it as soon as it renders."""
+    st.session_state["ehr_copilot_open"] = True
+    st.session_state[f"copilot_pending_{pid}"] = prompt
+
+
 def _process_copilot_turn(user_input: str, pid: str, name: str, meds_summary: str):
     """Run one copilot turn scoped to the selected patient (inline streaming)."""
     # Start the Galileo session on first input (mirrors the classic chat flow).
@@ -1499,6 +1528,25 @@ def _copilot_suggested_refill_med(active_med_names):
     return ""
 
 
+def _copilot_pending_draft():
+    """Return the Stage 1 draft dict when the latest assistant turn created a
+    draft that has not yet been sent — so the dialog can show explicit
+    approve / reject pills (the human-in-the-loop sign-off gate).
+    """
+    msgs = st.session_state.get("messages", [])
+    if not msgs:
+        return None
+    last = msgs[-1]
+    if not isinstance(last, dict):
+        return None
+    if not isinstance(last.get("message"), AIMessage):
+        return None
+    act = last.get("action") or {}
+    if act.get("order"):
+        return None
+    return act.get("draft") or None
+
+
 def _queue_copilot_turn(pending_key: str, prompt: str):
     """Queue a copilot prompt before Streamlit reruns the dialog fragment."""
     st.session_state[pending_key] = prompt
@@ -1535,71 +1583,67 @@ def _copilot_dialog(pid: str, name: str, meds_summary: str, active_med_names=Non
     # the bottom. Quick actions and the form only enqueue + rerun.
     pending = st.session_state.pop(pending_key, None)
     if pending:
+        # Echo the queued question immediately so the modal shows intent (and
+        # fills to full width) while the assistant streams its steps below —
+        # instead of a near-empty, narrow dialog during the first LLM call.
+        with st.chat_message("user"):
+            st.write(escape_dollar_signs(pending))
         _process_copilot_turn(pending, pid, name, meds_summary)
-        # Refresh only this dialog fragment. A full-app rerun invalidates the
-        # active fragment before the completed reply can be drawn.
-        st.rerun(scope="fragment")
+        # Prefer a fragment-scoped refresh (snappy, keeps the modal open) when
+        # this turn was triggered from inside the dialog. On the FIRST turn from
+        # a chart-level quick action we're in a full-app rerun, where
+        # scope="fragment" is illegal — fall back to a normal rerun then.
+        from streamlit.errors import StreamlitAPIException
+        try:
+            st.rerun(scope="fragment")
+        except StreamlitAPIException:
+            st.rerun()
 
-    has_messages = bool(st.session_state.get("messages"))
-    show_custom_input = has_messages
-
-    if not has_messages:
-        # Starter shortcuts — shown only on a fresh conversation, then hidden.
-        q1, q2 = st.columns(2)
-        q1.button(
-            "📋 Summarize this patient",
-            key=f"copilot_q_summary_{pid}",
+    # A Stage 1 draft awaiting sign-off takes priority: show explicit approve /
+    # reject pills. This is the human-in-the-loop gate — nothing reaches the
+    # pharmacy until the practitioner approves here.
+    pending_draft = _copilot_pending_draft()
+    if pending_draft is not None:
+        med = (pending_draft.get("medication") or "the medication").strip()
+        dose = (pending_draft.get("dosage") or "").strip()
+        drug_label = (f"{med} {dose}").strip()
+        st.caption("👇 A draft is ready for your review — approve to send it to the pharmacy.")
+        a1, a2 = st.columns(2)
+        a1.button(
+            "✅ Approve & send to pharmacy",
+            key=f"copilot_approve_{pid}",
             use_container_width=True,
             on_click=_queue_copilot_turn,
             args=(
                 pending_key,
-                "Give me a brief summary of this patient — active medications and any "
-                "recent labs or history I should be aware of.",
+                f"Approved — send the {drug_label} prescription to the pharmacy now.",
             ),
         )
-        q2.button(
-            "🧪 Any recent lab results?",
-            key=f"copilot_q_labs_{pid}",
+        a2.button(
+            "✏️ Reject / hold",
+            key=f"copilot_reject_{pid}",
             use_container_width=True,
             on_click=_queue_copilot_turn,
-            args=(pending_key, "What are this patient's most recent lab results?"),
-        )
-
-        qa1, qa2 = st.columns(2)
-        qa1.button(
-            "💊 Refill his Lisinopril",
-            key=f"copilot_qa_refill_{pid}",
-            use_container_width=True,
-            on_click=_queue_copilot_turn,
-            args=(pending_key, "Refill his Lisinopril."),
-        )
-        qa2.button(
-            "➕ Prescribe aspirin for pain",
-            key=f"copilot_qa_aspirin_{pid}",
-            use_container_width=True,
-            on_click=_queue_copilot_turn,
-            args=(pending_key, "Prescribe aspirin for his joint pain."),
-        )
-        show_custom_input = st.toggle(
-            "⌨️ Ask a custom question",
-            key=f"copilot_show_custom_{pid}",
+            args=(pending_key, "Don't send that — cancel the draft for now."),
         )
     else:
         suggested_med = _copilot_suggested_refill_med(active_med_names)
         if suggested_med is not None:
-            # Contextual confirm pills after the agent suggests a refill.
+            # Contextual confirm pills after the agent suggests a refill. "Yes"
+            # prepares a DRAFT (Stage 1) — it does not send; the practitioner
+            # still approves the draft above before it reaches the pharmacy.
             c1, c2 = st.columns(2)
             if suggested_med:
                 yes_label = f"✅ Yes, refill {suggested_med}"
                 yes_msg = (
                     f"Yes, refill {suggested_med} at the correct guideline dose and "
-                    f"send it to the pharmacy."
+                    f"prepare the order for my approval."
                 )
             else:
-                yes_label = "✅ Yes, go ahead with the refill"
+                yes_label = "✅ Yes, prepare the refill"
                 yes_msg = (
-                    "Yes, go ahead and refill it at the correct guideline dose and "
-                    "send it to the pharmacy."
+                    "Yes, go ahead and prepare the refill at the correct guideline "
+                    "dose for my approval."
                 )
             c1.button(
                 yes_label,
@@ -1616,20 +1660,19 @@ def _copilot_dialog(pid: str, name: str, meds_summary: str, active_med_names=Non
                 args=(pending_key, "No, don't take any action for now."),
             )
 
-    # Keep the fresh modal focused on one-click actions. The free-text form is
-    # opt-in before the first turn and automatically available for follow-ups.
-    if show_custom_input:
-        input_key = f"copilot_txt_{pid}"
-        with st.form(key=f"copilot_form_{pid}", clear_on_submit=True):
-            st.text_input(
-                "Ask about this patient or request an action",
-                key=input_key,
-            )
-            st.form_submit_button(
-                "Send",
-                on_click=_queue_copilot_form_turn,
-                args=(pending_key, input_key),
-            )
+    # Free-text follow-up is always available now that the quick actions live on
+    # the chart page (below the patient banner).
+    input_key = f"copilot_txt_{pid}"
+    with st.form(key=f"copilot_form_{pid}", clear_on_submit=True):
+        st.text_input(
+            "Ask about this patient or request an action",
+            key=input_key,
+        )
+        st.form_submit_button(
+            "Send",
+            on_click=_queue_copilot_form_turn,
+            args=(pending_key, input_key),
+        )
 
     if st.button(
         "Close",
@@ -1665,6 +1708,70 @@ def render_healthcare_ehr_page(
 
     # Retro-clinical EHR skin + workstation top bar.
     st.markdown(ehr_theme.app_style(), unsafe_allow_html=True)
+
+    # The collapsed-sidebar reopen (») button lives deep inside the sidebar header,
+    # and when the sidebar collapses Streamlit shrinks it to ~0 width and CLIPS the
+    # button via a generic wrapper's overflow. Plain CSS can't fix this because you
+    # can't select "all ancestors" of an element — only the wrapper that clips it,
+    # whose id we don't know. This tiny same-origin script walks the button's whole
+    # ancestor chain (exactly like the DOM-walk that proved the fix) and un-clips it,
+    # then styles it as a high-contrast white pill so it's always reachable in demos.
+    import streamlit.components.v1 as components
+
+    components.html(
+        """
+        <script>
+        (function () {
+          let doc;
+          try { doc = window.parent.document; } catch (e) { return; }  // same-origin guard
+          function fix() {
+            const btn = doc.querySelector('[data-testid="stExpandSidebarButton"]');
+            if (!btn) return;  // only rendered while the sidebar is collapsed
+            // Un-clip / un-hide EVERY ancestor — a generic wrapper gets display:none,
+            // clipped overflow, or a transform after hydration, which cuts the button.
+            let n = btn;
+            while (n && n !== doc.body) {
+              const s = getComputedStyle(n);
+              if (s.display === 'none') n.style.setProperty('display', 'block', 'important');
+              n.style.setProperty('overflow', 'visible', 'important');
+              n.style.setProperty('transform', 'none', 'important');
+              n.style.setProperty('opacity', '1', 'important');
+              n.style.setProperty('visibility', 'visible', 'important');
+              n.style.setProperty('pointer-events', 'auto', 'important');
+              n.style.setProperty('clip-path', 'none', 'important');
+              n = n.parentElement;
+            }
+            // Button itself: force it on-screen and styled as a white/teal pill.
+            btn.style.setProperty('display', 'inline-flex', 'important');
+            btn.style.setProperty('position', 'fixed', 'important');
+            btn.style.setProperty('top', '10px', 'important');
+            btn.style.setProperty('left', '10px', 'important');
+            btn.style.setProperty('width', 'auto', 'important');
+            btn.style.setProperty('height', 'auto', 'important');
+            btn.style.setProperty('z-index', '2147483001', 'important');
+            btn.style.setProperty('background', '#fff', 'important');
+            btn.style.setProperty('border', '1px solid #0d6a72', 'important');
+            btn.style.setProperty('border-radius', '6px', 'important');
+            btn.style.setProperty('box-shadow', '0 1px 3px rgba(20,50,74,.35)', 'important');
+            btn.querySelectorAll('*').forEach(function (c) {
+              c.style.setProperty('color', '#0a5158', 'important');
+              c.style.setProperty('fill', '#0a5158', 'important');
+              c.style.setProperty('visibility', 'visible', 'important');
+              c.style.setProperty('opacity', '1', 'important');
+            });
+          }
+          fix();
+          setInterval(fix, 300);  // re-apply after Streamlit reruns
+          // React the instant Streamlit re-renders the sidebar chrome after hydration.
+          try {
+            new MutationObserver(fix).observe(doc.body, { childList: true, subtree: true, attributes: true });
+          } catch (e) {}
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
     st.markdown(
         ehr_theme.render_topbar(EHR_PRACTITIONER, now=datetime.now()),
         unsafe_allow_html=True,
@@ -1676,7 +1783,9 @@ def render_healthcare_ehr_page(
         return
 
     options = [f"{p['patient_id']} — {p['patient_name']}" for p in patients]
-    top_left, top_right = st.columns([0.78, 0.22])
+    # Bottom-align so the assistant button lines up with the dropdown INPUT
+    # (not the taller label+input stack).
+    top_left, top_right = st.columns([0.78, 0.22], vertical_alignment="bottom")
     with top_left:
         selected_label = st.selectbox("Patient", options, key="ehr_patient_select")
     selected_pid = selected_label.split(" — ", 1)[0]
@@ -1697,16 +1806,73 @@ def render_healthcare_ehr_page(
     active_med_names = [m.get("medication", "") for m in active_meds if m.get("medication")]
 
     with top_right:
-        st.write("")  # vertical spacer to align with the selectbox
-        if st.button("🩺  Clinical Assistant", use_container_width=True, key="ehr_open_copilot"):
+        if st.button(
+            "🩺  Clinical Assistant",
+            use_container_width=True,
+            key="ehr_open_copilot",
+            type="primary",
+            help="Open the AI clinical assistant for this patient",
+        ):
             st.session_state["ehr_copilot_open"] = True
 
-    # Banner + dense chart grid, rendered as one styled HTML block.
+    # Patient banner (its own styled block so a native action toolbar can sit
+    # directly beneath the patient's name).
     st.markdown(
-        '<div class="ehr-root">'
-        + ehr_theme.render_banner(chart)
-        + ehr_theme.render_chart(chart)
-        + "</div>",
+        '<div class="ehr-root ehr-banner-wrap">' + ehr_theme.render_banner(chart) + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    # Chart-level quick actions — one click opens the copilot and runs the action
+    # for the patient in context. Kept patient-agnostic (e.g. "refill the med
+    # that's due") so the same bar works for every chart.
+    due_med = _ehr_due_medication(chart)
+    st.markdown('<div class="ehr-quickbar-label">Quick actions</div>', unsafe_allow_html=True)
+    qa_summary, qa_refill, qa_prescribe = st.columns(3)
+    qa_summary.button(
+        "📋  Summarize patient history",
+        key=f"ehr_qa_summary_{selected_pid}",
+        use_container_width=True,
+        on_click=_open_copilot_with_prompt,
+        args=(
+            selected_pid,
+            "Give me a brief summary of this patient — active medications, recent "
+            "labs, and any history I should be aware of. Also flag whether they're "
+            "due for any medication refills.",
+        ),
+    )
+    if due_med:
+        refill_prompt = (
+            f"This patient is due to refill {due_med.get('medication', '')}. Please "
+            f"prepare the refill order for my approval."
+        )
+    else:
+        refill_prompt = (
+            "Is this patient due for any medication refills? If so, prepare the "
+            "refill order for my approval."
+        )
+    qa_refill.button(
+        "💊  Refill the medication that's due",
+        key=f"ehr_qa_refill_{selected_pid}",
+        use_container_width=True,
+        on_click=_open_copilot_with_prompt,
+        args=(selected_pid, refill_prompt),
+    )
+    qa_prescribe.button(
+        "➕  Prescribe a new medication",
+        key=f"ehr_qa_prescribe_{selected_pid}",
+        use_container_width=True,
+        on_click=_open_copilot_with_prompt,
+        args=(
+            selected_pid,
+            "I'd like to prescribe a new medication for this patient — I'll tell you "
+            "which one. Please check it against their current medications for "
+            "interactions first, then draft the order for my approval.",
+        ),
+    )
+
+    # Dense chart grid (snapshot + panels) as its own styled block.
+    st.markdown(
+        '<div class="ehr-root ehr-chart-wrap">' + ehr_theme.render_chart(chart) + "</div>",
         unsafe_allow_html=True,
     )
 

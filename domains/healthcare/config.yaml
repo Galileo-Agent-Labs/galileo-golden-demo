@@ -44,6 +44,7 @@ tools:
   - "delete_patient_record"
   - "search_medicine_qa"
   - "check_drug_interactions"
+  - "prepare_prescription_order"
   - "send_prescription_to_pharmacy"
 
 # Vector store configuration

@@ -579,6 +579,40 @@ async def _run_prescription_safety_check(medication: str, dosage: str, guideline
         return None
 
 
+async def prepare_prescription_order(
+    patient_id: str,
+    medication: str,
+    dosage: str,
+    pharmacy: str = "",
+    sig: str = "",
+    quantity: str = "",
+) -> str:
+    """
+    STAGE 1 of the two-stage prescribing workflow: prepare a DRAFT prescription
+    order for the practitioner to review. This is a safe, non-consequential action
+    — it does NOT contact the pharmacy. It stages the proposed medication, dosage,
+    and directions and returns a draft that the practitioner must explicitly
+    approve before ``send_prescription_to_pharmacy`` (Stage 2) is called.
+    """
+    pid = (patient_id or "").strip().upper()
+    draft = {
+        "status": "draft",
+        "draft_id": f"DRAFT-{uuid.uuid4().hex[:8].upper()}",
+        "patient_id": pid,
+        "medication": medication,
+        "dosage": dosage,
+        "sig": sig or "as directed",
+        "quantity": quantity or "30-day supply",
+        "pharmacy": pharmacy or "the patient's preferred pharmacy",
+        "message": (
+            f"Draft prescription for {medication} {dosage} prepared for review. "
+            f"Awaiting the practitioner's approval before it is sent to the pharmacy."
+        ),
+    }
+    # Tool execution is logged once by GalileoCallback; no manual span here.
+    return json.dumps(draft)
+
+
 async def send_prescription_to_pharmacy(
     patient_id: str,
     medication: str,
@@ -587,10 +621,11 @@ async def send_prescription_to_pharmacy(
     sig: str = "",
 ) -> str:
     """
-    Prescribe and submit a medication directly to the pharmacy — a consequential
-    action sent immediately (no separate draft step). Before committing, the
-    proposed dosage (as chosen by the agent) is checked against the retrieved
-    dosing guideline; if a safety control flags it, the order is held and NOT sent.
+    STAGE 2 of the two-stage prescribing workflow: submit an APPROVED medication
+    to the pharmacy — a consequential action. Only call this after the practitioner
+    has explicitly approved the Stage 1 draft. Before committing, the proposed
+    dosage (as chosen by the agent) is checked against the retrieved dosing
+    guideline; if a safety control flags it, the order is held and NOT sent.
     """
     pid = (patient_id or "").strip().upper()
 
@@ -640,5 +675,6 @@ TOOLS = [
     delete_patient_record,
     search_medicine_qa,
     check_drug_interactions,
+    prepare_prescription_order,
     send_prescription_to_pharmacy,
 ]

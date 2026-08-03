@@ -544,13 +544,50 @@ def render_page(c: dict, practitioner="Dr. A. Morgan", now: datetime | None = No
 # ---------------------------------------------------------------------------
 STREAMLIT_CSS = """
 .stApp{ background:var(--paper); }
-.stApp, .stApp p, .stApp label, .stApp span, .stApp div{ font-family:var(--sans); }
+.stApp, .stApp p, .stApp label,
+.stApp span:not([data-testid="stIconMaterial"]):not([class*="material-"]),
+.stApp div{ font-family:var(--sans); }
+/* Streamlit draws its chrome glyphs (sidebar collapse arrows, expander chevrons,
+   button/section icons) with a Material Symbols icon font via ligatures. The
+   global font override above must NOT touch them, or the raw icon name renders
+   as giant, overlapping text. Restore the icon font explicitly. */
+.stApp [data-testid="stIconMaterial"],
+.stApp .material-icons, .stApp .material-icons-outlined,
+.stApp .material-symbols-outlined, .stApp .material-symbols-rounded{
+  font-family:'Material Symbols Rounded','Material Symbols Outlined','Material Icons' !important;
+}
 [data-testid="stMainBlockContainer"], .block-container{
   max-width:1340px !important; padding-top:1.1rem !important; padding-bottom:3rem !important;
 }
-[data-testid="stHeader"]{ background:transparent; }
+[data-testid="stHeader"]{ background:transparent; z-index:2147483000 !important; }
 [data-testid="stToolbar"], #MainMenu, [data-testid="stDecoration"], footer{ display:none !important; }
-[data-testid="stMain"] [data-testid="stVerticalBlock"]{ gap:.55rem; }
+/* Collapsed-sidebar reopen button. When collapsed, Streamlit shrinks the sidebar
+   to ~0 width and CLIPS its overflow — which cuts off the reopen (>>) button that
+   lives in the sidebar header. Forcing overflow:visible on the sidebar chain lets
+   the button stick back out at the top-left (proven via a DOM walk); the body stays
+   collapsed because its width is still 0. Also keep the button chain visible and
+   lifted above our transparent top bar, styled as a white pill with a teal arrow. */
+[data-testid="stSidebar"],
+[data-testid="stSidebarHeader"],
+[data-testid="stSidebarCollapsedControl"],
+div:has(> [data-testid="stExpandSidebarButton"]){
+  overflow:visible !important;
+}
+[data-testid="stExpandSidebarButton"],
+div:has(> [data-testid="stExpandSidebarButton"]),
+[data-testid="stSidebarHeader"]:has([data-testid="stExpandSidebarButton"]),
+[data-testid="stSidebarCollapsedControl"]{
+  opacity:1 !important; visibility:visible !important; pointer-events:auto !important;
+  transform:none !important; z-index:2147483001 !important;
+}
+[data-testid="stExpandSidebarButton"]{
+  display:inline-flex !important; position:relative;
+  background:#fff !important; border:1px solid var(--teal) !important;
+  border-radius:6px !important; box-shadow:0 1px 3px rgba(20,50,74,.35) !important;
+}
+[data-testid="stExpandSidebarButton"]:hover{ background:#e5f1f1 !important; border-color:var(--teal-d) !important; }
+[data-testid="stExpandSidebarButton"] *{ color:var(--teal-d) !important; fill:var(--teal-d) !important; }
+[data-testid="stMain"] [data-testid="stVerticalBlock"]{ gap:.65rem; }
 
 /* Keep the native form controls light on the clinical chart (belt-and-braces
    alongside the light theme in .streamlit/config.toml). */
@@ -563,29 +600,87 @@ ul[role="listbox"], [data-baseweb="popover"] ul{ background:#fff !important; }
 [role="option"]:hover{ background:var(--paper2) !important; }
 .stTextInput input{ background:#fff !important; color:var(--ink) !important; border-color:var(--line) !important; font-size:13px; }
 
-/* control strip: patient picker + assistant button */
+/* buttons — secondary (outline) by default so the primary assistant CTA and the
+   chart quick-actions read as a clear visual hierarchy. */
 .stButton > button{
-  border-radius:4px; border:1px solid var(--teal); background:var(--teal); color:#fff;
-  font-weight:600; font-size:12.5px; letter-spacing:.02em; padding:.42rem .8rem;
-  box-shadow:none; transition:background .12s;
+  border-radius:5px; border:1px solid var(--teal); background:#fff; color:var(--teal-d);
+  font-weight:600; font-size:12.5px; letter-spacing:.02em; padding:.5rem .85rem;
+  box-shadow:none; transition:background .12s,border-color .12s,color .12s,box-shadow .12s;
 }
-.stButton > button:hover{ background:var(--teal-d); border-color:var(--teal-d); color:#fff; }
-.stButton > button:focus:not(:active){ color:#fff; border-color:var(--teal-d); }
+.stButton > button:hover{ background:#e5f1f1; border-color:var(--teal-d); color:var(--teal-d); }
+.stButton > button:focus:not(:active){ color:var(--teal-d); border-color:var(--teal-d); box-shadow:0 0 0 2px rgba(13,106,114,.18); }
 [data-testid="stSidebar"] .stButton > button{ font-size:12px; }
+
+/* primary call-to-action — the Clinical Assistant launcher. Targeted by its
+   widget-key container class so it stays bold regardless of how this Streamlit
+   build renders a "primary" button. Filled accent, matched to the dropdown
+   height, with a gentle attention pulse so practitioners spot it immediately. */
+.st-key-ehr_open_copilot button,
+.stButton > button[kind="primary"]{
+  background:linear-gradient(180deg,var(--teal),var(--teal-d)) !important;
+  border:1px solid var(--teal-d) !important; color:#fff !important;
+  font-weight:700 !important; font-size:13px !important; letter-spacing:.02em;
+  min-height:40px; padding:.5rem 1rem !important;
+  box-shadow:0 1px 2px rgba(20,50,74,.28); animation:ehrPulse 2s ease-in-out infinite;
+}
+.st-key-ehr_open_copilot button *{ color:#fff !important; }
+.st-key-ehr_open_copilot button:hover,
+.stButton > button[kind="primary"]:hover{
+  background:linear-gradient(180deg,var(--teal-d),var(--navy)) !important;
+  border-color:var(--navy) !important; color:#fff !important; animation:none;
+}
+.st-key-ehr_open_copilot button:focus:not(:active),
+.stButton > button[kind="primary"]:focus:not(:active){
+  color:#fff !important; box-shadow:0 0 0 3px rgba(13,106,114,.3) !important;
+}
+@keyframes ehrPulse{
+  0%,100%{ box-shadow:0 1px 2px rgba(20,50,74,.28), 0 0 0 0 rgba(13,106,114,.5); }
+  50%{ box-shadow:0 1px 2px rgba(20,50,74,.28), 0 0 0 7px rgba(13,106,114,0); }
+}
+
+/* chart-level quick-action toolbar sitting directly below the patient banner */
+.ehr-quickbar-label{
+  font-family:var(--sans); font-size:9.5px; text-transform:uppercase; letter-spacing:.12em;
+  color:var(--muted); font-weight:600; margin:.9rem 0 .6rem 2px;
+}
+
+/* breathing room between the stacked EHR blocks (banner → quick actions → chart) */
+.ehr-banner-wrap{ margin-top:.3rem; }
+.ehr-chart-wrap{ margin-top:.7rem; }
+.ehr-chart-wrap .ehr-snap{ border-top:1px solid var(--line); }
 
 .stSelectbox label, .stTextInput label{
   font-size:9.5px !important; text-transform:uppercase; letter-spacing:.12em;
   color:var(--muted) !important; font-weight:600;
+  margin:0 0 .55rem 2px !important; padding-top:.35rem !important;
 }
+/* breathing room between the workstation tabs and the "PATIENT" control row */
+.ehr-tabs{ margin-bottom:1.1rem; }
 div[data-baseweb="select"] > div{
   border-radius:4px; border-color:var(--line); background:#fff;
   font-family:var(--mono); font-size:13px; min-height:40px;
 }
 div[data-baseweb="select"] > div:hover{ border-color:var(--teal); }
 
-/* copilot dialog dressed as a clinical assistant panel */
-div[role="dialog"]{ border-radius:9px; border-top:4px solid var(--teal); }
+/* copilot dialog dressed as a clinical assistant panel. A stable width keeps the
+   modal from painting narrow on first open before its content streams in, and a
+   softer, more balanced card size reads better than an over-wide sheet. */
+div[role="dialog"]{
+  background:#fff !important;
+  border-radius:12px; border-top:4px solid var(--teal);
+  width:min(94vw,660px); min-width:min(94vw,660px); max-width:min(94vw,660px);
+  box-shadow:0 24px 64px rgba(16,31,42,.38);
+  max-height:86vh;
+}
+/* Dim the page behind the modal so it reads as a focused overlay (Streamlit's
+   default scrim is nearly transparent). Cover both the native <dialog> backdrop
+   and the wrapper, across Streamlit builds. */
+dialog::backdrop, [data-testid="stDialog"]::backdrop{ background:rgba(16,31,42,.55) !important; }
+[data-testid="stDialog"]{ background:rgba(16,31,42,.55) !important; }
 div[role="dialog"] [data-testid="stMarkdownContainer"] p{ font-size:13px; }
+/* give the streaming status panel a calm, consistent footprint */
+div[role="dialog"] [data-testid="stStatusWidget"],
+div[role="dialog"] details[data-testid="stExpander"]{ border-radius:7px; }
 
 /* tighten the markdown-rendered EHR blocks against Streamlit's default gaps */
 [data-testid="stMarkdownContainer"] .ehr-root{ margin-top:0; }

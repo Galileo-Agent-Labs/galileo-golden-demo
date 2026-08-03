@@ -91,9 +91,19 @@ class DomainRAGSystem:
 
             setup_environment(self.domain_name, domain_config.config)
 
-            if not os.environ.get("POSTGRES_PASSWORD"):
+            # DB credentials can come from either a full connection URL (hosted,
+            # e.g. Neon/Supabase — no separate password env) or the individual
+            # POSTGRES_* parts (local Docker, which sets POSTGRES_PASSWORD). Require
+            # one of them; a URL alone is sufficient and is how the hosted deploy runs.
+            if not (
+                os.environ.get("POSTGRES_URL")
+                or os.environ.get("DATABASE_URL")
+                or os.environ.get("POSTGRES_PASSWORD")
+            ):
                 raise ValueError(
-                    "POSTGRES_PASSWORD not found. Please add it to .streamlit/secrets.toml"
+                    "No database credentials found. Set 'postgres_url' (hosted, e.g. "
+                    "Neon) or 'postgres_password' (local Docker) in "
+                    ".streamlit/secrets.toml"
                 )
 
             # Selects the prebuilt embedding index matching the active provider,

@@ -1,5 +1,11 @@
 # Evercrest Health — Streamlit deployment
 
+> **Superseded:** Use
+> [`EVERCREST_STREAMLIT_DEPLOYMENT_RUNBOOK.md`](EVERCREST_STREAMLIT_DEPLOYMENT_RUNBOOK.md)
+> for current URLs, branch mappings, Cisco 1Password references, update,
+> rotation, rollback, and verification procedures. This file is retained only
+> for historical EHR v2 implementation context.
+
 Deploys the **practitioner EHR frontend** (the self-contained chart in
 `domains/healthcare/ehr_data.py` + `ehr_theme.py`, wired through `app.py`) to
 Streamlit Community Cloud as **its own app**, pointed at the Evercrest Galileo
@@ -17,7 +23,7 @@ open on the Evercrest EHR.
 - Branch: `evercrest-ehr-frontend` (this branch)
 - Entrypoint: `app.py`
 - Python: `3.12`
-- Suggested URL: `ehr-assistant.streamlit.app` (this is a **separate** app from
+- URL: `evercrest-demo-v2.streamlit.app` (this is a **separate** app from
   the main golden-demo deployment; only the database is shared)
 
 ## Secrets — the golden rule

@@ -3,8 +3,8 @@ domain:
   description: "Healthcare assistant for online help and patient information support"
 
 galileo:
-  project: "splunk-webinar-demo"
-  log_stream: "healthcare"
+  project: "demo-test"
+  log_stream: "Agent"
 
 # UI configuration
 ui:

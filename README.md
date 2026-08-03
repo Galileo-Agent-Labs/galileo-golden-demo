@@ -14,6 +14,13 @@ Not a production reference architecture or replacement for customer-specific POC
 
 ## Getting Started
 
+### Hosted Evercrest deployments
+
+The two Streamlit Community Cloud apps, their shared backend, credentials
+workflow, update process, verification steps, and rollback procedure are
+documented in the
+**[Evercrest Streamlit deployment runbook](documentation/EVERCREST_STREAMLIT_DEPLOYMENT_RUNBOOK.md)**.
+
 ### Prerequisites
 
 - Python 3.8+

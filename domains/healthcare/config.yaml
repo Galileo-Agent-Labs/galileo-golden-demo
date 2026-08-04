@@ -4,7 +4,7 @@ domain:
 
 galileo:
   project: "demo-test"
-  log_stream: "Agent"
+  log_stream: "Patient Summary"
 
 # UI configuration
 ui:

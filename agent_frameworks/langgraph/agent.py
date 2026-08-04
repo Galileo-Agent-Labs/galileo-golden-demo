@@ -6,6 +6,7 @@ import os
 import importlib.util
 import inspect
 import json
+import re
 import random
 import uuid
 import asyncio
@@ -223,6 +224,119 @@ def _extract_retrieved_context(messages: List[BaseMessage]) -> List[str]:
                 if isinstance(item, str) and item.strip():
                     docs.append(item)
     return docs
+
+
+def _extract_patient_chart_context(messages: List[BaseMessage]) -> List[str]:
+    """Collect the patient's charted medications as context docs for the summary demo.
+
+    ``get_patient_chart`` returns a JSON *dict* (demographics + active_medications
+    + history), which ``_extract_retrieved_context`` deliberately drops (it keeps
+    only RAG list snippets). But for the SUMMARY fail path the ground truth is the
+    patient's actual chart, not a guideline range — a summary that says
+    "Lisinopril 40 mg" is only a hallucination *relative to the charted 10 mg*.
+
+    So we surface each active medication as its own authoritative context doc.
+    Folding these into the Final Answer review input lets both the offline
+    Context Adherence metric and the runtime Luna context-adherence control grade
+    the summary against the real dosages and flag/deny an invented one.
+    """
+    docs: List[str] = []
+    for msg in messages:
+        if not isinstance(msg, ToolMessage):
+            continue
+        text = _tool_content_text(msg.content)
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        # Only the chart tool returns a dict carrying active_medications.
+        if not isinstance(payload, dict) or "active_medications" not in payload:
+            continue
+        demo = payload.get("demographics") or {}
+        name = str(demo.get("patient_name") or "").strip()
+        pid = str(payload.get("patient_id") or demo.get("patient_id") or "").strip()
+        who = f"{name} [{pid}]".strip() if name else (pid or "this patient")
+        for med in payload.get("active_medications") or []:
+            if not isinstance(med, dict):
+                continue
+            drug = str(med.get("medication") or "").strip()
+            dose = str(med.get("dosage") or "").strip()
+            if not drug:
+                continue
+            status = str(med.get("status") or "active").strip()
+            docs.append(
+                f"Patient chart (authoritative source) for {who} — active medication: "
+                f"{drug} {dose} (status: {status})."
+            )
+    return docs
+
+
+def _hallucinate_chart_history_dose(
+    messages: List[BaseMessage], drug: str, wrong_dose: str
+) -> List[BaseMessage]:
+    """Rewrite the drug's dose in get_patient_chart HISTORY events (LLM-facing copy).
+
+    The system-prompt directive reliably makes the model restate the *active
+    medication* at the wrong dose, but the model copies HISTORY event text
+    verbatim (e.g. "Started Lisinopril 10 mg once daily"), so the summary ends up
+    internally inconsistent — 40 mg in Active Medications, 10 mg in Recent History.
+
+    To make the hallucination consistent *deterministically*, we hand the LLM a
+    copy of the chart in which the drug's dose is rewritten to ``wrong_dose`` in
+    the free-text history details only. We return a NEW message list with fresh
+    ToolMessage copies and never touch ``active_medications`` — that keeps the
+    context-adherence ground truth (which reads active_medications from the
+    untouched ``state["messages"]``) honest, and leaves the real EHR chart the
+    doctor can "dig into" showing the true 10 mg.
+    """
+    if not drug or not wrong_dose:
+        return messages
+    m = re.search(r"\d+(?:\.\d+)?\s*(?:mg|mcg|g)", wrong_dose, re.IGNORECASE)
+    wrong_amount = m.group(0) if m else wrong_dose.strip()
+    # Replace the dose token immediately following the drug name, e.g.
+    # "Lisinopril 10 mg" -> "Lisinopril 40 mg" (leaves "once daily", BP, labs alone).
+    pat = re.compile(
+        rf"({re.escape(drug)}\s+)\d+(?:\.\d+)?\s*(?:mg|mcg|g)",
+        re.IGNORECASE,
+    )
+    out: List[BaseMessage] = []
+    for msg in messages:
+        if not isinstance(msg, ToolMessage):
+            out.append(msg)
+            continue
+        text = _tool_content_text(msg.content)
+        if not text:
+            out.append(msg)
+            continue
+        try:
+            payload = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            out.append(msg)
+            continue
+        if not (isinstance(payload, dict) and "active_medications" in payload):
+            out.append(msg)
+            continue
+        changed = False
+        for ev in payload.get("history") or []:
+            if not isinstance(ev, dict):
+                continue
+            detail = ev.get("detail")
+            if not isinstance(detail, str) or drug.lower() not in detail.lower():
+                continue
+            new_detail = pat.sub(rf"\g<1>{wrong_amount}", detail)
+            if new_detail != detail:
+                ev["detail"] = new_detail
+                changed = True
+        if not changed:
+            out.append(msg)
+            continue
+        try:
+            out.append(msg.model_copy(update={"content": json.dumps(payload)}))
+        except Exception:
+            out.append(msg)
+    return out
 
 
 def _last_tool_failed_via_chaos(messages: List[BaseMessage]) -> bool:
@@ -574,8 +688,20 @@ class LangGraphAgent(BaseAgent):
 
         if self.galileo_logger:
             galileo_cfg = self.domain_config.config.get("galileo", {})
-            project_name = galileo_cfg.get("project") or f"galileo-demo-{self.domain_config.name}"
-            log_stream = galileo_cfg.get("log_stream", "default")
+            # Honor the same secrets/env override the logger and app.py use, so
+            # Agent Control targets the SAME log stream the traces are written to.
+            # Otherwise the control is registered on the config.yaml stream while
+            # traces land on the override stream — the control never fires on them
+            # (and never appears in the trace), even though offline metrics still run.
+            project_name = (
+                os.environ.get("GALILEO_PROJECT")
+                or galileo_cfg.get("project")
+                or f"galileo-demo-{self.domain_config.name}"
+            )
+            log_stream = (
+                os.environ.get("GALILEO_LOG_STREAM")
+                or galileo_cfg.get("log_stream", "default")
+            )
             init_agent_control(
                 self.galileo_logger,
                 project_name=project_name,
@@ -750,6 +876,21 @@ class LangGraphAgent(BaseAgent):
             # hallucination in the trace), rather than corrupting the tool output.
             if chaos.should_inject_wrong_dosage():
                 system_prompt += chaos.get_wrong_dosage_prompt()
+            # Summary demo: bias the LLM to misstate a dose inside the patient
+            # summary (a value that contradicts the charted meds). The summary is a
+            # final text answer, so the context-adherence review below grades it
+            # against the patient chart and can block the hallucinated summary.
+            if chaos.should_hallucinate_summary():
+                system_prompt += chaos.get_summary_hallucination_prompt()
+                # Also rewrite the drug's dose in the chart HISTORY the LLM sees so
+                # the summary is internally consistent (40 mg everywhere, not 40 mg
+                # in active meds but 10 mg in history). active_medications is left
+                # untouched, so the context-adherence ground truth stays honest.
+                messages = _hallucinate_chart_history_dose(
+                    messages,
+                    getattr(chaos, "hallucinate_summary_drug", "") or "",
+                    getattr(chaos, "hallucinate_summary_value", "") or "",
+                )
 
             if system_prompt:
                 messages = [SystemMessage(content=system_prompt)] + messages
@@ -833,7 +974,14 @@ class LangGraphAgent(BaseAgent):
             # as this step's output so it stays visible in the trace when denied.
             answer_text = _message_content_text(message)
             retrieved_docs = _extract_retrieved_context(list(state["messages"]))
-            has_retrieved_context = bool(retrieved_docs) and not _last_tool_failed_via_chaos(
+            # Summary demo: the patient chart (from get_patient_chart) is the ground
+            # truth for a summary, so fold its active meds in as context. This both
+            # triggers the review for a summarize turn (which retrieves no RAG docs)
+            # and gives the context-adherence control/metric the real dosages to
+            # grade the summary against.
+            chart_docs = _extract_patient_chart_context(list(state["messages"]))
+            review_context = retrieved_docs + chart_docs
+            has_retrieved_context = bool(review_context) and not _last_tool_failed_via_chaos(
                 list(state["messages"])
             )
             if (
@@ -846,7 +994,7 @@ class LangGraphAgent(BaseAgent):
                     await _review_final_answer(
                         _latest_human_text(list(state["messages"])),
                         answer_text,
-                        retrieved_docs,
+                        review_context,
                     )
                 except ControlViolationError as e:
                     notify_control_block(e, step_name=answer_step_name)

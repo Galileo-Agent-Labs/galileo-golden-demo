@@ -1120,11 +1120,33 @@ def multi_domain_agent_app(domain_name: str):
                     if domain_name == "healthcare":
                         st.markdown("**Practitioner EHR demo**")
 
-                        force_wrong_dosage = st.checkbox(
-                            "💊 Force Wrong Dosage (Act 1)",
+                        hallucinate_summary = st.checkbox(
+                            "📋 Hallucinate Summary Dosage (Summary demo)",
                             value=True,
+                            key=f"chaos_hallucinate_summary_{domain_name}",
+                            help="ON by default for the summary demo: when the doctor asks to summarize the patient, the agent misstates one med's dose in the summary (a value that differs from the chart). The context-adherence eval/control grades the summary against the real chart and flags/blocks it. Toggle the console control on/off to show detect vs. prevent."
+                        )
+                        summary_dosage_drug = st.text_input(
+                            "Summary drug to misstate",
+                            value=chaos.hallucinate_summary_drug,
+                            key=f"chaos_summary_drug_{domain_name}",
+                            help="Which charted medication the summary misstates (pinned to the demo patient's drug, default Lisinopril)."
+                        )
+                        summary_dosage_value = st.text_input(
+                            "Summary wrong dosage value",
+                            value=chaos.hallucinate_summary_value,
+                            key=f"chaos_summary_dosage_value_{domain_name}",
+                            help="The wrong dose the summary states (default 40 mg once daily vs. the charted 10 mg — a genuine hallucination relative to the patient's chart)."
+                        )
+                        chaos.enable_hallucinate_summary(
+                            hallucinate_summary, summary_dosage_value, summary_dosage_drug
+                        )
+
+                        force_wrong_dosage = st.checkbox(
+                            "💊 Force Wrong Dosage (prescribe/refill)",
+                            value=False,
                             key=f"chaos_force_wrong_dosage_{domain_name}",
-                            help="ON by default for the demo: the agent always hallucinates the dose, so Act 1 works by only toggling the console dosage control. Stays on across a page refresh; uncheck it if you want a clean dose (e.g. Act 2)."
+                            help="Legacy prescribe/refill fail path: the agent fills a subtly-wrong dose on a refill/prescription. Off by default on this branch — the headline fail path here is the summary hallucination above."
                         )
                         wrong_dosage_value = st.text_input(
                             "Wrong dosage value",
@@ -1151,7 +1173,8 @@ def multi_domain_agent_app(domain_name: str):
                         chaos.rate_limit_chaos_enabled,
                         chaos.runaway_retries_enabled,
                         chaos.force_wrong_dosage_enabled,
-                        chaos.skip_interaction_check_enabled
+                        chaos.skip_interaction_check_enabled,
+                        chaos.hallucinate_summary_enabled
                     ])
                     
                     if active_count > 0:
@@ -1170,6 +1193,7 @@ def multi_domain_agent_app(domain_name: str):
                                 st.metric("Data Corruption", stats['data_corruption_count'])
                                 st.metric("Runaway Retries", stats['runaway_retries_count'])
                                 if domain_name == "healthcare":
+                                    st.metric("Summary Hallucination", stats['hallucinate_summary_count'])
                                     st.metric("Wrong Dosage", stats['force_wrong_dosage_count'])
                                     st.metric("Skipped Interaction", stats['skip_interaction_check_count'])
                             
@@ -1433,10 +1457,10 @@ def _process_copilot_turn(user_input: str, pid: str, name: str, meds_summary: st
         f"Today's date is {today}. You are assisting a practitioner who is viewing "
         f"the chart for patient {pid} ({name}). Active medications: "
         f"{meds_summary or 'none on file'}. When the practitioner says 'him', 'her', "
-        f"or 'this patient' without giving an ID, use patient_id {pid}. When "
-        f"reviewing the chart, compare the most recent refill date plus its supply "
-        f"duration against today's date; if that supply has run out or is nearly out, "
-        f"tell the practitioner the patient is due for a refill and offer to refill it."
+        f"or 'this patient' without giving an ID, use patient_id {pid}. Only offer to "
+        f"refill, prescribe, or send an order when the practitioner explicitly asks — "
+        f"when simply summarizing or reviewing the chart, provide the summary only and "
+        f"do not proactively offer a refill, prescription, or pharmacy action."
     )
     conversation_messages = [{"role": "user", "content": context}]
     for msg_data in st.session_state.messages:
@@ -1626,39 +1650,11 @@ def _copilot_dialog(pid: str, name: str, meds_summary: str, active_med_names=Non
             on_click=_queue_copilot_turn,
             args=(pending_key, "Don't send that — cancel the draft for now."),
         )
-    else:
-        suggested_med = _copilot_suggested_refill_med(active_med_names)
-        if suggested_med is not None:
-            # Contextual confirm pills after the agent suggests a refill. "Yes"
-            # prepares a DRAFT (Stage 1) — it does not send; the practitioner
-            # still approves the draft above before it reaches the pharmacy.
-            c1, c2 = st.columns(2)
-            if suggested_med:
-                yes_label = f"✅ Yes, refill {suggested_med}"
-                yes_msg = (
-                    f"Yes, refill {suggested_med} at the correct guideline dose and "
-                    f"prepare the order for my approval."
-                )
-            else:
-                yes_label = "✅ Yes, prepare the refill"
-                yes_msg = (
-                    "Yes, go ahead and prepare the refill at the correct guideline "
-                    "dose for my approval."
-                )
-            c1.button(
-                yes_label,
-                key=f"copilot_confirm_yes_{pid}",
-                use_container_width=True,
-                on_click=_queue_copilot_turn,
-                args=(pending_key, yes_msg),
-            )
-            c2.button(
-                "🚫 No, take no action",
-                key=f"copilot_confirm_no_{pid}",
-                use_container_width=True,
-                on_click=_queue_copilot_turn,
-                args=(pending_key, "No, don't take any action for now."),
-            )
+    # NOTE: the old contextual "Yes, refill / No, take no action" pills were removed
+    # for the summary demo. They fired off a text heuristic (any assistant reply
+    # mentioning "refill") and so misfired on summaries whose history mentions a
+    # past refill. The explicit refill button still creates a draft and shows the
+    # approve/reject pills above.
 
     # Free-text follow-up is always available now that the quick actions live on
     # the chart page (below the patient banner).
@@ -1836,8 +1832,7 @@ def render_healthcare_ehr_page(
         args=(
             selected_pid,
             "Give me a brief summary of this patient — active medications, recent "
-            "labs, and any history I should be aware of. Also flag whether they're "
-            "due for any medication refills.",
+            "labs, and any history I should be aware of.",
         ),
     )
     if due_med:

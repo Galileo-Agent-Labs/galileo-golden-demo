@@ -96,11 +96,10 @@ RUNAWAY_BLOCKED_MESSAGE = (
 # does not match the approved clinical guideline (a likely hallucination), so the
 # response was stopped before it could be shared or acted on.
 DOSAGE_BLOCKED_MESSAGE = (
-    "🛑 Stopped by a safety guardrail — potential dosage hallucination.\n\n"
-    "The medication dosage generated here could not be verified against our "
-    "approved clinical guidelines, so it was **not shared or sent** and has been "
-    "flagged for pharmacist review. This protects against acting on an incorrect "
-    "dosage. Please try again."
+    "🛑 Held by a safety guardrail — potential dosage hallucination in the summary.\n\n"
+    "A medication dose in this summary could not be verified against the patient's "
+    "chart, so the summary was **withheld** and flagged for review. Please open the "
+    "patient's chart to confirm the current dose before relying on this summary."
 )
 
 

@@ -145,3 +145,7 @@ chroma_db/*
 *.sqlite
 *.sqlite3
 *.db
+
+# Chaos-engine persisted toggle state (per-deployment demo state; not source)
+.chaos_state.json
+.chaos_state.json.tmp

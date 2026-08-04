@@ -891,6 +891,12 @@ class LangGraphAgent(BaseAgent):
                     getattr(chaos, "hallucinate_summary_drug", "") or "",
                     getattr(chaos, "hallucinate_summary_value", "") or "",
                 )
+            # False safety alert ("cry wolf"): the agent raises an urgent, alarming
+            # alert claiming a charted med was dosed dangerously. We do NOT rewrite
+            # the chart here — the alert must stay ungrounded so the same
+            # context-adherence review below flags/blocks the false alarm.
+            if hasattr(chaos, "should_false_alert") and chaos.should_false_alert():
+                system_prompt += chaos.get_false_alert_prompt()
 
             if system_prompt:
                 messages = [SystemMessage(content=system_prompt)] + messages
@@ -999,7 +1005,11 @@ class LangGraphAgent(BaseAgent):
                 except ControlViolationError as e:
                     notify_control_block(e, step_name=answer_step_name)
                     message = AIMessage(
-                        content=format_blocked_message(e, step_name=answer_step_name)
+                        content=format_blocked_message(
+                            e,
+                            step_name=answer_step_name,
+                            blocked_output=answer_text,
+                        )
                     )
                     control_blocked = True
                     self.last_control_block = {

@@ -2,6 +2,7 @@
 Galileo Demo App
 """
 import os
+import re
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -265,6 +266,32 @@ def escape_dollar_signs(text) -> str:
     return message_content_to_text(text).replace('$', '\\$')
 
 
+# Leading marker the agent uses when it raises an (urgent) safety alert. Rendered
+# with a red "error" background so a false-alarm visually screams for attention.
+_SAFETY_ALERT_MARKER = "URGENT SAFETY ALERT"
+
+
+def render_assistant_reply(content) -> None:
+    """Render an assistant reply, giving any leading safety-alert block a red,
+    attention-grabbing background while the rest of the reply renders normally.
+
+    The false-safety-alert chaos mode makes the agent open with a bold
+    ``⚠️ **URGENT SAFETY ALERT**`` banner. We split that opening block (up to the
+    first blank line) and render it via ``st.error`` — a red, high-alarm box — so
+    it reads as urgent/panic-inducing, then render the remaining summary plainly.
+    """
+    text = escape_dollar_signs(content)
+    if _SAFETY_ALERT_MARKER.lower() not in text.lower():
+        st.write(text)
+        return
+    parts = re.split(r"\n\s*\n", text, maxsplit=1)
+    alert_block = parts[0].strip()
+    rest = parts[1].strip() if len(parts) > 1 else ""
+    st.error(alert_block)
+    if rest:
+        st.write(rest)
+
+
 def add_hallucination_interaction_to_chat(domain_config: dict) -> bool:
     """Append the demo hallucination Q&A to chat history for UI display."""
     example_queries = domain_config.get("ui", {}).get("example_queries", [])
@@ -356,7 +383,7 @@ def display_chat_history():
                     if message_data.get("blocked"):
                         st.error(escape_dollar_signs(message.content))
                     else:
-                        st.write(escape_dollar_signs(message.content))
+                        render_assistant_reply(message.content)
         else:
             # Fallback for old message format
             if isinstance(message_data, HumanMessage):
@@ -1122,7 +1149,7 @@ def multi_domain_agent_app(domain_name: str):
 
                         hallucinate_summary = st.checkbox(
                             "📋 Hallucinate Summary Dosage (Summary demo)",
-                            value=True,
+                            value=chaos.hallucinate_summary_enabled,
                             key=f"chaos_hallucinate_summary_{domain_name}",
                             help="ON by default for the summary demo: when the doctor asks to summarize the patient, the agent misstates one med's dose in the summary (a value that differs from the chart). The context-adherence eval/control grades the summary against the real chart and flags/blocks it. Toggle the console control on/off to show detect vs. prevent."
                         )
@@ -1142,9 +1169,31 @@ def multi_domain_agent_app(domain_name: str):
                             hallucinate_summary, summary_dosage_value, summary_dosage_drug
                         )
 
+                        false_alert = st.checkbox(
+                            "🚨 False Safety Alert (cry-wolf demo)",
+                            value=chaos.false_alert_enabled,
+                            key=f"chaos_false_alert_{domain_name}",
+                            help="Separate fail path: when the doctor reviews/summarizes the patient, the agent raises a loud URGENT safety alert claiming a charted med was dosed dangerously — a FALSE alarm (the chart shows the real, benign dose). Ungrounded vs. the chart, so the same context-adherence eval/control flags it and, when the control is on, BLOCKS the needless panic."
+                        )
+                        false_alert_drug = st.text_input(
+                            "Alert drug to reframe as dangerous",
+                            value=chaos.false_alert_drug,
+                            key=f"chaos_false_alert_drug_{domain_name}",
+                            help="Which real charted medication the false alert reframes as an overdose (default Lisinopril)."
+                        )
+                        false_alert_value = st.text_input(
+                            "Alert 'dangerous' dosage value",
+                            value=chaos.false_alert_value,
+                            key=f"chaos_false_alert_value_{domain_name}",
+                            help="The scary dose the false alert claims was prescribed (default 40 mg once daily vs. the charted 10 mg). It's a false alarm — ungrounded relative to the chart."
+                        )
+                        chaos.enable_false_alert(
+                            false_alert, false_alert_drug, false_alert_value
+                        )
+
                         force_wrong_dosage = st.checkbox(
                             "💊 Force Wrong Dosage (prescribe/refill)",
-                            value=False,
+                            value=chaos.force_wrong_dosage_enabled,
                             key=f"chaos_force_wrong_dosage_{domain_name}",
                             help="Legacy prescribe/refill fail path: the agent fills a subtly-wrong dose on a refill/prescription. Off by default on this branch — the headline fail path here is the summary hallucination above."
                         )
@@ -1174,7 +1223,8 @@ def multi_domain_agent_app(domain_name: str):
                         chaos.runaway_retries_enabled,
                         chaos.force_wrong_dosage_enabled,
                         chaos.skip_interaction_check_enabled,
-                        chaos.hallucinate_summary_enabled
+                        chaos.hallucinate_summary_enabled,
+                        chaos.false_alert_enabled
                     ])
                     
                     if active_count > 0:
@@ -1194,6 +1244,7 @@ def multi_domain_agent_app(domain_name: str):
                                 st.metric("Runaway Retries", stats['runaway_retries_count'])
                                 if domain_name == "healthcare":
                                     st.metric("Summary Hallucination", stats['hallucinate_summary_count'])
+                                    st.metric("False Safety Alert", stats['false_alert_count'])
                                     st.metric("Wrong Dosage", stats['force_wrong_dosage_count'])
                                     st.metric("Skipped Interaction", stats['skip_interaction_check_count'])
                             

@@ -95,12 +95,32 @@ RUNAWAY_BLOCKED_MESSAGE = (
 # Makes the reason explicit for the demo: a medication dosage was generated that
 # does not match the approved clinical guideline (a likely hallucination), so the
 # response was stopped before it could be shared or acted on.
-DOSAGE_BLOCKED_MESSAGE = (
-    "🛑 Held by a safety guardrail — potential dosage hallucination in the summary.\n\n"
-    "A medication dose in this summary could not be verified against the patient's "
-    "chart, so the summary was **withheld** and flagged for review. Please open the "
-    "patient's chart to confirm the current dose before relying on this summary."
+# Summary-hallucination fail path: the summary stated a dose that doesn't match the
+# chart. One context-adherence control backs both healthcare fail paths; the message
+# is chosen from the blocked content (see format_blocked_message) so a single control
+# still yields a scenario-appropriate explanation.
+SUMMARY_BLOCKED_MESSAGE = (
+    "🛑 Held by a safety guardrail — a medication dose in this summary could not be "
+    "verified against the patient's chart.\n\n"
+    "The summary stated a dose that isn't grounded in the patient's charted "
+    "medications (a likely hallucination), so it was **withheld** and flagged for "
+    "review. Please open the patient's chart to confirm the current dose before "
+    "relying on this summary."
 )
+
+# False safety alert ("cry wolf") fail path: the response raised an alarming dosage
+# warning that isn't supported by the chart.
+ALERT_BLOCKED_MESSAGE = (
+    "🛑 Held by a safety guardrail — this urgent safety alert could not be verified "
+    "against the patient's chart.\n\n"
+    "The response raised an alarming warning about a medication dose that isn't "
+    "supported by the patient's charted medications (a likely **false alarm**), so it "
+    "was **withheld** before it could trigger unnecessary escalation. Please open the "
+    "patient's chart to confirm the actual dose."
+)
+
+# Back-compat alias; defaults to the summary wording.
+DOSAGE_BLOCKED_MESSAGE = SUMMARY_BLOCKED_MESSAGE
 
 
 def format_blocked_message(
@@ -108,12 +128,17 @@ def format_blocked_message(
     step_name: str = "tool_step",
     *,
     steered: bool = False,
+    blocked_output: str = "",
 ) -> str:
     """Return a user-friendly message for Agent Control blocks.
 
     The message is tailored by which control fired (via ``error.control_name``):
-    the runaway-retry guardrail gets a service-error/support message, while
-    other controls keep the generic block message.
+    the runaway-retry guardrail gets a service-error/support message. For the shared
+    healthcare context-adherence control, the message is further tailored by the
+    BLOCKED CONTENT (``blocked_output``) — a single control drives both the
+    summary-hallucination and the false-safety-alert fail paths, and they're told
+    apart by whether the withheld text is an urgent alert vs. a plain summary. This
+    avoids configuring two redundant controls with identical criteria.
     """
     if steered:
         return (
@@ -125,7 +150,9 @@ def format_blocked_message(
     if "runaway" in control_name.lower():
         return f"{RUNAWAY_BLOCKED_MESSAGE}\n\n_Reference: {control_name}_"
     if "dosage" in control_name.lower() or "hallucination" in control_name.lower():
-        return DOSAGE_BLOCKED_MESSAGE
+        if "urgent safety alert" in (blocked_output or "").lower():
+            return ALERT_BLOCKED_MESSAGE
+        return SUMMARY_BLOCKED_MESSAGE
 
     return (
         "I'm sorry, this action was blocked by Agent Control. "

@@ -197,6 +197,26 @@ def _summary_text(chart: dict, wrong: dict | None = None) -> str:
     return "\n".join(lines)
 
 
+def _false_alert_text(chart: dict, wrong: dict) -> str:
+    """Build a summary that OPENS with a false, alarming safety alert.
+
+    The alert claims ``wrong['medication']`` was dosed dangerously at
+    ``wrong['dosage']`` (a value the chart does NOT support), then the rest of the
+    summary is accurate. The alarm is ungrounded relative to the charted dose, so
+    context-adherence flags it — a false alarm ("cry wolf"), not a real problem.
+    Mirrors the app's ``⚠️ **URGENT SAFETY ALERT**`` banner shape.
+    """
+    drug = wrong["medication"]
+    alert_dose = wrong["dosage"]
+    banner = (
+        "⚠️ **URGENT SAFETY ALERT**\n"
+        f"This patient's {drug} was prescribed at a dangerous, incorrect dose of "
+        f"{alert_dose}, which exceeds the safe maximum and poses a serious risk to the "
+        f"patient. Immediate review is required.\n\n"
+    )
+    return banner + _summary_text(chart, wrong=None)
+
+
 # ---------------------------------------------------------------------------
 # Timestamp spread
 # ---------------------------------------------------------------------------
@@ -266,6 +286,47 @@ def _emit_summary(gl, chart: dict, base: datetime, wrong: dict | None) -> str:
     return demo_type
 
 
+def _emit_false_alert(gl, chart: dict, base: datetime, wrong: dict) -> str:
+    """A summarize turn where the agent raises a FALSE urgent safety alert.
+
+    Same trace shape as ``_emit_summary`` (chart tool -> Patient Chart retriever ->
+    Final Answer), but the answer opens with an alarming, ungrounded dosage warning.
+    The charted context stays truthful, so context-adherence catches the false alarm.
+    """
+    pid, name = chart["patient_id"], _name_of(chart)
+    request = random.choice(_SUMMARY_TEMPLATES).format(name=name, pid=pid)
+    context_docs = _chart_context_docs(chart)
+    answer = _false_alert_text(chart, wrong)
+    clk = _Clock(base)
+
+    gl.start_session(name="EHR — Summary", external_id=str(uuid.uuid4())[:10])
+    meta = {
+        "demo_type": "false_alert",
+        "drug": wrong["medication"],
+        "charted_dose": wrong["charted"],
+        "alert_dose": wrong["dosage"],
+    }
+    gl.start_trace(input=request, name="Patient summary", created_at=base,
+                   metadata=meta, tags=["healthcare", "summary", "alert"])
+
+    gl.add_tool_span(input=json.dumps({"patient_id": pid}), output=json.dumps(chart),
+                     name="get_patient_chart", created_at=clk.tick(int(9e7)),
+                     duration_ns=int(9e7), tags=["healthcare", "tool"])
+    gl.add_retriever_span(input=f"Chart for {pid}", output=context_docs,
+                          name="Patient Chart", created_at=clk.tick(int(6e7)),
+                          duration_ns=int(6e7), status_code=200)
+    llm_input = "Context:\n" + "\n\n".join(context_docs) + f"\n\nQuestion:\n{request}"
+    gl.add_llm_span(input=llm_input, output=answer, model="gpt-4o",
+                    name="Healthcare Final Answer", created_at=clk.tick(int(1.4e8)),
+                    duration_ns=int(1.4e8), temperature=0.1, status_code=200,
+                    num_input_tokens=len(llm_input.split()) * 2,
+                    num_output_tokens=len(answer.split()) * 2,
+                    total_tokens=(len(llm_input.split()) + len(answer.split())) * 2,
+                    metadata=meta, time_to_first_token_ns=500000)
+    gl.conclude(output=answer, duration_ns=clk.elapsed_ns(base), status_code=200)
+    return "false_alert"
+
+
 def _emit_medicine_qa(gl, chart: dict, base: datetime) -> str:
     drug = random.choice(list(GUIDELINES))
     g = GUIDELINES[drug]
@@ -331,8 +392,9 @@ def _emit_healthy_refill(gl, chart: dict, base: datetime) -> str:
 # Orchestration
 # ---------------------------------------------------------------------------
 _WEIGHTS = {
-    "healthy_summary": 0.58,
-    "summary_hallucination": 0.22,
+    "healthy_summary": 0.48,
+    "summary_hallucination": 0.20,
+    "false_alert": 0.12,
     "medicine_qa": 0.10,
     "healthy_refill": 0.10,
 }
@@ -379,6 +441,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--count", type=int, default=60, help="Total traces to seed")
+    parser.add_argument("--only", choices=list(_WEIGHTS), default=None,
+                        help="Seed ONLY this category (all --count go to it); appends to the "
+                             "existing stream without re-seeding the other categories.")
     parser.add_argument("--days", type=int, default=7, help="Backdate window (days)")
     parser.add_argument("--project", default=None, help="Override Galileo project (else secrets/config)")
     parser.add_argument("--log-stream", default=None, help="Override log stream (else secrets/config)")
@@ -390,7 +455,12 @@ def main() -> None:
 
     random.seed(args.seed)
     project, log_stream = _load_project_stream(args.project, args.log_stream)
-    counts = _plan_counts(args.count)
+    if args.only:
+        # Seed a single category (e.g. append only false_alert cases to a stream
+        # that already has the rest of the mix).
+        counts = {args.only: args.count}
+    else:
+        counts = _plan_counts(args.count)
 
     all_patients = _all_patients()
     if not all_patients:
@@ -413,18 +483,21 @@ def main() -> None:
 
     # Build a chronological work list. The hallucination cluster is recent-biased.
     work: list[tuple[str, datetime]] = []
-    for _ in range(counts["healthy_summary"]):
+    for _ in range(counts.get("healthy_summary", 0)):
         work.append(("healthy_summary", _random_business_dt(args.days, no_backdate=args.no_backdate)))
-    for _ in range(counts["medicine_qa"]):
+    for _ in range(counts.get("medicine_qa", 0)):
         work.append(("medicine_qa", _random_business_dt(args.days, no_backdate=args.no_backdate)))
-    for _ in range(counts["healthy_refill"]):
+    for _ in range(counts.get("healthy_refill", 0)):
         work.append(("healthy_refill", _random_business_dt(args.days, no_backdate=args.no_backdate)))
-    for _ in range(counts["summary_hallucination"]):
+    for _ in range(counts.get("summary_hallucination", 0)):
         work.append(("summary_hallucination",
+                     _random_business_dt(args.days, recent_bias=True, no_backdate=args.no_backdate)))
+    for _ in range(counts.get("false_alert", 0)):
+        work.append(("false_alert",
                      _random_business_dt(args.days, recent_bias=True, no_backdate=args.no_backdate)))
     work.sort(key=lambda x: x[1])
 
-    seeded = {k: 0 for k in counts}
+    seeded = {k: 0 for k in _WEIGHTS}
     for i, (category, base) in enumerate(work, 1):
         try:
             if category == "medicine_qa":
@@ -444,6 +517,17 @@ def main() -> None:
                     gl.flush()
                     continue
                 _emit_summary(gl, chart, base, wrong=wrong)
+            elif category == "false_alert":
+                # Same flagship bias so the headline false alarm is always present.
+                pid = FLAGSHIP_PID if random.random() < 0.4 else random.choice(all_patients)
+                chart = _patient_chart(pid)
+                wrong = _pick_hallucination(chart)
+                if not wrong:  # no usable med; fall back to a healthy summary
+                    _emit_summary(gl, chart, base, wrong=None)
+                    seeded["healthy_summary"] += 1
+                    gl.flush()
+                    continue
+                _emit_false_alert(gl, chart, base, wrong)
             seeded[category] += 1
             # Flush per trace so an interrupted run still leaves complete sessions.
             gl.flush()
